@@ -1,0 +1,32 @@
+# Secrets
+.env
+.env.local
+.env.*.local
+backend/.env
+frontend/.env.local
+backend/serviceAccountKey.json
+*.pem
+*.key
+
+# Dependencies
+backend/node_modules/
+frontend/node_modules/
+
+# Build output
+backend/dist/
+frontend/.next/
+frontend/out/
+*.tsbuildinfo
+
+# Logs
+*.log
+backend-dev.log
+frontend-dev.log
+fake-server.log
+backend/backend.log
+backend/backend-dev.log
+frontend/frontend-dev.log
+
+# OS / editor
+.DS_Store
+Thumbs.db
