@@ -161,12 +161,13 @@ export async function reserveRateLimit(
     return db.runTransaction(async (tx) => {
         const cooldownRef = db.collection(COOLDOWN_COLLECTION).doc(encodeKey(keyId));
         const cooldownSnap = await tx.get(cooldownRef);
+        let shouldDeleteExpiredCooldown = false;
         if (cooldownSnap.exists) {
             const expiresAt = normalizeDate(cooldownSnap.data()?.expiresAt);
             if (expiresAt && expiresAt.getTime() > now.getTime()) {
                 return { allowed: false, reason: 'Key is in cooldown period' } as const;
             }
-            tx.delete(cooldownRef);
+            shouldDeleteExpiredCooldown = true;
         }
 
         const reservation: RateLimitReservation = {
@@ -181,32 +182,57 @@ export async function reserveRateLimit(
             ...tokenCounters.map((config) => ({ ...config, kind: 'token' as const })),
         ];
 
-        for (const config of allCounters) {
+        const counterEntries = allCounters.map((config) => {
             const windowStartMs = getWindowStartMs(config.windowMs, nowMs);
             const docId = buildCounterDocId(keyId, config.metric, windowStartMs);
             const docRef = db.collection(COUNTER_COLLECTION).doc(docId);
-            const snapshot = await tx.get(docRef);
+
+            return {
+                config,
+                windowStartMs,
+                docId,
+                docRef,
+            };
+        });
+
+        const counterSnapshots = counterEntries.length > 0
+            ? await tx.getAll(...counterEntries.map((entry) => entry.docRef))
+            : [];
+
+        for (let index = 0; index < counterEntries.length; index += 1) {
+            const entry = counterEntries[index];
+            const snapshot = counterSnapshots[index];
             const currentCount = snapshot.exists ? Number(snapshot.data()?.count ?? 0) : 0;
 
-            if (currentCount + config.amount > config.limit) {
-                return { allowed: false, reason: failureReason(config.metric) } as const;
+            if (currentCount + entry.config.amount > entry.config.limit) {
+                return { allowed: false, reason: failureReason(entry.config.metric) } as const;
             }
+        }
 
-            tx.set(docRef, {
+        for (let index = 0; index < counterEntries.length; index += 1) {
+            const entry = counterEntries[index];
+            const snapshot = counterSnapshots[index];
+            const currentCount = snapshot.exists ? Number(snapshot.data()?.count ?? 0) : 0;
+
+            tx.set(entry.docRef, {
                 keyId,
-                metric: config.metric,
-                count: currentCount + config.amount,
-                windowStart: new Date(windowStartMs),
-                expiresAt: new Date(windowStartMs + config.windowMs),
+                metric: entry.config.metric,
+                count: currentCount + entry.config.amount,
+                windowStart: new Date(entry.windowStartMs),
+                expiresAt: new Date(entry.windowStartMs + entry.config.windowMs),
                 updatedAt: now,
             }, { merge: true });
 
-            const counterReservation = { docId, amount: config.amount };
-            if (config.kind === 'request') {
+            const counterReservation = { docId: entry.docId, amount: entry.config.amount };
+            if (entry.config.kind === 'request') {
                 reservation.requestCounters.push(counterReservation);
             } else {
                 reservation.tokenCounters.push(counterReservation);
             }
+        }
+
+        if (shouldDeleteExpiredCooldown) {
+            tx.delete(cooldownRef);
         }
 
         return { allowed: true, reservation } as const;
