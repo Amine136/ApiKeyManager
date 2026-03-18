@@ -17,7 +17,7 @@ Client App → [Bearer Token Auth] → Fastify Proxy → [Key Selection] → AI 
 
 - 🔐 **AES-256-GCM encryption** for all API keys at rest
 - 🔄 **Priority + weighted key selection** with automatic rotation
-- ⏱️ **In-memory rate limiting** (RPM/RPH/RPD/TPM/TPD + cooldown)
+- ⏱️ **Shared Firestore-backed rate limiting** (RPM/RPH/RPD/TPM/TPD + cooldown)
 - 🔌 **Adapter pattern** for providers (Gemini, Imagen, OpenAI)
 - 👥 **ADMIN / CLIENT** role-based access
 - 📊 **Dashboard** with usage stats and logs
@@ -54,46 +54,38 @@ cp .env.example backend/.env
 Edit `backend/.env`:
 
 ```env
+NODE_ENV=development
 PORT=3000
 ENCRYPTION_KEY=<run: openssl rand -hex 32>
 FIREBASE_PROJECT_ID=your-project-id
-FIREBASE_SERVICE_ACCOUNT_PATH=./serviceAccountKey.json
+FIREBASE_SERVICE_ACCOUNT_PATH=/absolute/path/to/serviceAccountKey.json
 FRONTEND_URL=http://localhost:3001
 GLOBAL_RATE_LIMIT_RPM=100
+LOGIN_RATE_LIMIT_ATTEMPTS_PER_MINUTE=20
+PROXY_RATE_LIMIT_PER_IP_PER_MINUTE=180
+PROXY_RATE_LIMIT_PER_CLIENT_PER_MINUTE=600
+CLIENT_LAST_USED_WRITE_INTERVAL_MS=300000
+PROVIDER_REQUEST_TIMEOUT_MS=30000
+CUSTOM_PROVIDER_ALLOWED_HOSTS=api.openai.com,generativelanguage.googleapis.com,api.anthropic.com,api.cloudflare.com
+ALLOW_UNSAFE_CUSTOM_PROVIDER_URLS=true
 ```
-
-Place your Firebase `serviceAccountKey.json` in the `backend/` folder.
 
 Create `frontend/.env.local`:
 
 ```env
-NEXT_PUBLIC_API_URL=http://localhost:3000
+NEXT_PUBLIC_API_URL=
 ```
 
 ### 3. Create your first admin client
 
-Before using the frontend, you need an ADMIN token. Use this script:
+Before using the frontend, create an `ADMIN` token:
 
 ```bash
-# Generate a token and hash it
-TOKEN=$(openssl rand -hex 32)
-HASH=$(echo -n "$TOKEN" | sha256sum | cut -d' ' -f1)
-echo "Your admin token: $TOKEN"
-echo "SHA-256 hash: $HASH"
+cd backend
+npx tsx scripts/generate-admin.ts
 ```
 
-Then add a document to the `clients` Firestore collection:
-
-```json
-{
-  "name": "Admin",
-  "hashedToken": "<paste HASH here>",
-  "role": "ADMIN",
-  "isActive": true,
-  "createdAt": "<timestamp>",
-  "updatedAt": "<timestamp>"
-}
-```
+The script prints the plaintext token once. Save it securely. It cannot be recovered later.
 
 ### 4. Run
 
@@ -112,9 +104,70 @@ cd frontend && npm run dev
 
 Open http://localhost:3001/login and paste your admin token.
 
+## Production Admin Access
+
+For a production deployment, keep admin access separate from proxy usage.
+
+### Credentials you need
+
+- `username:` Nginx basic-auth username for the admin panel
+- `password:` Nginx basic-auth password for the admin panel
+- `admin token:` app-level `ADMIN` token used after the basic-auth prompt
+
+### How to create them
+
+#### 1. Nginx basic-auth username
+
+Choose a fixed username, for example:
+
+```text
+admin-panel
+```
+
+#### 2. Nginx basic-auth password
+
+Generate a strong password:
+
+```bash
+openssl rand -base64 24
+```
+
+Create the htpasswd entry:
+
+```bash
+USERNAME="admin-panel"
+PASSWORD="$(openssl rand -base64 24 | tr -d '\n')"
+HASH="$(openssl passwd -apr1 "$PASSWORD")"
+printf '%s:%s\n' "$USERNAME" "$HASH"
+```
+
+Store the printed `USERNAME` and `PASSWORD` in your password manager. Put the printed `USERNAME:HASH` entry into your Nginx htpasswd file.
+
+#### 3. App admin token
+
+Create a new app-level `ADMIN` token:
+
+```bash
+cd backend
+npx tsx scripts/generate-admin.ts
+```
+
+This token is only for the admin frontend login screen.
+
+### Correct separation
+
+- `ADMIN` token:
+  - only for logging into the frontend admin panel
+  - should be used only by you
+- `CLIENT` token:
+  - only for calling `/api/v1/proxy`
+  - should be used by apps, scripts, and integrations
+
+Never use the same token for both admin access and proxy usage.
+
 ## API Endpoints
 
-### Admin Routes (ADMIN token required)
+### Admin Routes (admin session required)
 
 | Method | Path | Description |
 |--------|------|-------------|
@@ -175,7 +228,7 @@ POST /api/v1/proxy
 
 1. Find active provider by type/name
 2. Get all ACTIVE keys for that provider
-3. Check in-memory rate limits (RPM/RPH/RPD/TPM/TPD + cooldown)
+3. Check shared rate limits (RPM/RPH/RPD/TPM/TPD + cooldown)
 4. Sort by priority (lowest first)
 5. Weighted random selection among same-priority keys
 6. If no key available → return HTTP 429
