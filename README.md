@@ -1,4 +1,5 @@
 # API Key Manager
+<img width="1298" height="653" alt="image" src="https://github.com/user-attachments/assets/7b93e097-6b28-41e1-8194-60eebf89319f" />
 
 A proxy server that manages API keys for AI providers (Google Gemini, Google Imagen, OpenAI). Sits between client apps and AI APIs, handling key rotation, encryption, rate limiting, and usage tracking.
 
