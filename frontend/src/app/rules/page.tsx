@@ -23,6 +23,7 @@ interface ApiKey {
 interface Model {
     id: string;
     name: string;
+    displayName: string;
     providerId: string;
 }
 
@@ -90,6 +91,11 @@ function formatRuleLimits(rule: Rule): string {
     return Object.entries(rule.rules)
         .map(([key, value]) => `${key}: ${value}`)
         .join(' · ');
+}
+
+function getSingleProviderId(providerIds: string[]): string | null {
+    const unique = Array.from(new Set(providerIds.filter(Boolean)));
+    return unique.length === 1 ? unique[0] : null;
 }
 
 export default function RulesPage() {
@@ -202,9 +208,28 @@ export default function RulesPage() {
     );
 
     const modelNameById = useMemo(
-        () => Object.fromEntries(models.map((model) => [model.id, model.name])),
+        () => Object.fromEntries(models.map((model) => [model.id, model.displayName || model.name])),
         [models]
     );
+
+    const keyById = useMemo(
+        () => Object.fromEntries(keys.map((key) => [key.id, key])),
+        [keys]
+    );
+
+    const modelById = useMemo(
+        () => Object.fromEntries(models.map((model) => [model.id, model])),
+        [models]
+    );
+
+    const selectionProviderId = useMemo(() => {
+        const providerIds = [
+            ...Array.from(selectedKeyIds).map((id) => keyById[id]?.providerId).filter(Boolean),
+            ...Array.from(selectedModelIds).map((id) => modelById[id]?.providerId).filter(Boolean),
+        ] as string[];
+
+        return getSingleProviderId(providerIds);
+    }, [selectedKeyIds, selectedModelIds, keyById, modelById]);
 
     const ruleUsage = useMemo(() => {
         const oneDayAgo = Date.now() - 86_400_000;
@@ -338,6 +363,16 @@ export default function RulesPage() {
     };
 
     const openCreateModal = (keyIds: string[], modelIds: string[], ruleToEdit?: Rule) => {
+        const providerId = getSingleProviderId([
+            ...keyIds.map((id) => keyById[id]?.providerId).filter(Boolean),
+            ...modelIds.map((id) => modelById[id]?.providerId).filter(Boolean),
+        ] as string[]);
+
+        if ((keyIds.length > 0 || modelIds.length > 0) && !providerId && !ruleToEdit) {
+            alert('API keys and models must belong to the same provider');
+            return;
+        }
+
         setSelectedKeyIds(new Set(keyIds));
         setSelectedModelIds(new Set(modelIds));
         setEditingRuleId(ruleToEdit?.id ?? null);
@@ -382,7 +417,13 @@ export default function RulesPage() {
 
     const handleDragStart = (side: 'key' | 'model', id: string) => {
         const selectedIds = side === 'key' ? selectedKeyIds : selectedModelIds;
-        const ids = selectedIds.has(id) && selectedIds.size > 0 ? Array.from(selectedIds) : [id];
+        const currentProviderId = side === 'key' ? keyById[id]?.providerId : modelById[id]?.providerId;
+        const ids = selectedIds.has(id) && selectedIds.size > 0
+            ? Array.from(selectedIds).filter((selectedId) => {
+                const providerId = side === 'key' ? keyById[selectedId]?.providerId : modelById[selectedId]?.providerId;
+                return providerId === currentProviderId;
+            })
+            : [id];
         setDragPayload({ side, ids, anchorId: id });
     };
 
@@ -400,6 +441,17 @@ export default function RulesPage() {
             : selectedModelIds.has(targetId) && selectedModelIds.size > 0
                 ? Array.from(selectedModelIds)
                 : [targetId];
+
+        const providerId = getSingleProviderId([
+            ...keyIds.map((id) => keyById[id]?.providerId).filter(Boolean),
+            ...modelIds.map((id) => modelById[id]?.providerId).filter(Boolean),
+        ] as string[]);
+
+        if (!providerId) {
+            alert('API keys and models must belong to the same provider');
+            setDragPayload(null);
+            return;
+        }
 
         openCreateModal(keyIds, modelIds);
         setDragPayload(null);
@@ -423,6 +475,16 @@ export default function RulesPage() {
         if (rateLimits.maxTokensPerMinute) ruleData.maxTokensPerMinute = +rateLimits.maxTokensPerMinute;
         if (rateLimits.maxTokensPerDay) ruleData.maxTokensPerDay = +rateLimits.maxTokensPerDay;
         if (rateLimits.cooldownSeconds) ruleData.cooldownSeconds = +rateLimits.cooldownSeconds;
+
+        const selectedProviderIds = [
+            ...Array.from(selectedKeyIds).map((id) => keyById[id]?.providerId).filter(Boolean),
+            ...Array.from(selectedModelIds).map((id) => modelById[id]?.providerId).filter(Boolean),
+        ] as string[];
+
+        if (!editingRuleId && !getSingleProviderId(selectedProviderIds)) {
+            alert('API keys and models must belong to the same provider');
+            return;
+        }
 
         setSubmitting(true);
 
@@ -627,7 +689,7 @@ export default function RulesPage() {
                                                             handleDrop('model', model.id);
                                                         }}
                                                     >
-                                                        <span className="rules-bubble-label">{model.name}</span>
+                                                        <span className="rules-bubble-label">{model.displayName || model.name}</span>
                                                         <span className="rules-bubble-meta">
                                                             {rules.filter((rule) => rule.modelId === model.id).length} rule{rules.filter((rule) => rule.modelId === model.id).length !== 1 ? 's' : ''}
                                                         </span>
@@ -786,17 +848,33 @@ export default function RulesPage() {
                                                     type="button"
                                                     className="btn btn-ghost"
                                                     style={{ fontSize: '11px', padding: '2px 8px' }}
-                                                    onClick={() => setSelectedKeyIds(selectedKeyIds.size === keys.length ? new Set() : new Set(keys.map((key) => key.id)))}
+                                                    onClick={() => {
+                                                        if (selectedKeyIds.size === keys.length) {
+                                                            setSelectedKeyIds(new Set());
+                                                            return;
+                                                        }
+
+                                                        const allowedProviderId = selectionProviderId ?? models[0]?.providerId ?? null;
+                                                        setSelectedKeyIds(new Set(
+                                                            keys
+                                                                .filter((key) => !allowedProviderId || key.providerId === allowedProviderId)
+                                                                .map((key) => key.id)
+                                                        ));
+                                                    }}
                                                 >
                                                     {selectedKeyIds.size === keys.length ? 'Deselect All' : 'Select All'}
                                                 </button>
                                             </label>
                                             <div className="rules-modal-selector">
                                                 {keys.map((key) => (
-                                                    <label key={key.id} className={`rules-modal-option ${selectedKeyIds.has(key.id) ? 'selected' : ''}`}>
+                                                    <label
+                                                        key={key.id}
+                                                        className={`rules-modal-option ${selectedKeyIds.has(key.id) ? 'selected' : ''} ${selectionProviderId && key.providerId !== selectionProviderId ? 'disabled' : ''}`}
+                                                    >
                                                         <input
                                                             type="checkbox"
                                                             checked={selectedKeyIds.has(key.id)}
+                                                            disabled={!!selectionProviderId && key.providerId !== selectionProviderId}
                                                             onChange={() => {
                                                                 setSelectedKeyIds((prev) => {
                                                                     const next = new Set(prev);
@@ -819,17 +897,33 @@ export default function RulesPage() {
                                                     type="button"
                                                     className="btn btn-ghost"
                                                     style={{ fontSize: '11px', padding: '2px 8px' }}
-                                                    onClick={() => setSelectedModelIds(selectedModelIds.size === models.length ? new Set() : new Set(models.map((model) => model.id)))}
+                                                    onClick={() => {
+                                                        if (selectedModelIds.size === models.length) {
+                                                            setSelectedModelIds(new Set());
+                                                            return;
+                                                        }
+
+                                                        const allowedProviderId = selectionProviderId ?? keys[0]?.providerId ?? null;
+                                                        setSelectedModelIds(new Set(
+                                                            models
+                                                                .filter((model) => !allowedProviderId || model.providerId === allowedProviderId)
+                                                                .map((model) => model.id)
+                                                        ));
+                                                    }}
                                                 >
                                                     {selectedModelIds.size === models.length ? 'Deselect All' : 'Select All'}
                                                 </button>
                                             </label>
                                             <div className="rules-modal-selector">
                                                 {models.map((model) => (
-                                                    <label key={model.id} className={`rules-modal-option ${selectedModelIds.has(model.id) ? 'selected' : ''}`}>
+                                                    <label
+                                                        key={model.id}
+                                                        className={`rules-modal-option ${selectedModelIds.has(model.id) ? 'selected' : ''} ${selectionProviderId && model.providerId !== selectionProviderId ? 'disabled' : ''}`}
+                                                    >
                                                         <input
                                                             type="checkbox"
                                                             checked={selectedModelIds.has(model.id)}
+                                                            disabled={!!selectionProviderId && model.providerId !== selectionProviderId}
                                                             onChange={() => {
                                                                 setSelectedModelIds((prev) => {
                                                                     const next = new Set(prev);
@@ -839,7 +933,7 @@ export default function RulesPage() {
                                                                 });
                                                             }}
                                                         />
-                                                        <span>{model.name}</span>
+                                                        <span>{model.displayName || model.name}</span>
                                                     </label>
                                                 ))}
                                             </div>

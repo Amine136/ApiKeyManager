@@ -390,13 +390,41 @@ export function validateClientPayload(body: unknown): {
     };
 }
 
-export function validateModelPayload(body: unknown): { name: string; providerId: string } {
+export function validateModelPayload(body: unknown): {
+    name: string;
+    displayName: string;
+    providerId: string;
+    inputModalities: Array<'TEXT' | 'IMAGE'>;
+    outputModalities: Array<'TEXT' | 'IMAGE'>;
+} {
     const payload = asObject(body, 'request body');
-    assertAllowedKeys(payload, ['name', 'providerId'], 'request body');
+    assertAllowedKeys(payload, ['name', 'displayName', 'providerId', 'inputModalities', 'outputModalities'], 'request body');
+
+    const inputModalities = readStringArray(payload, 'inputModalities', { maxItems: 2, maxLength: 10 });
+    const outputModalities = readStringArray(payload, 'outputModalities', { maxItems: 2, maxLength: 10 });
+
+    if (!inputModalities || inputModalities.length === 0) {
+        throw new RequestValidationError('inputModalities must contain at least one item');
+    }
+    if (!outputModalities || outputModalities.length === 0) {
+        throw new RequestValidationError('outputModalities must contain at least one item');
+    }
+
+    const normalizeModalities = (values: string[], field: string) => {
+        const normalized = values.map((value) => value.toUpperCase());
+        const invalid = normalized.filter((value) => !['TEXT', 'IMAGE'].includes(value));
+        if (invalid.length > 0) {
+            throw new RequestValidationError(`${field} must contain only: TEXT, IMAGE`);
+        }
+        return Array.from(new Set(normalized)) as Array<'TEXT' | 'IMAGE'>;
+    };
 
     return {
         name: readRequiredString(payload, 'name', { maxLength: 160 }),
+        displayName: readRequiredString(payload, 'displayName', { maxLength: 160 }),
         providerId: readRequiredString(payload, 'providerId', { maxLength: 120 }),
+        inputModalities: normalizeModalities(inputModalities, 'inputModalities'),
+        outputModalities: normalizeModalities(outputModalities, 'outputModalities'),
     };
 }
 
@@ -470,12 +498,63 @@ export function validateBulkRulePayload(body: unknown): {
 
 export function validateProxyInput(body: unknown): ProxyInput {
     const payload = asObject(body, 'request body');
-    assertAllowedKeys(payload, ['prompt', 'model', 'provider', 'options'], 'request body');
+    assertAllowedKeys(payload, ['prompt', 'input', 'model', 'provider', 'options'], 'request body');
 
     const result: ProxyInput = {
-        prompt: readRequiredString(payload, 'prompt', { maxLength: 100_000, trim: false }),
+        input: [],
         model: readRequiredString(payload, 'model', { maxLength: 160 }),
     };
+
+    const prompt = readOptionalString(payload, 'prompt', { maxLength: 100_000, trim: false });
+    if (prompt !== undefined) {
+        result.input.push({ type: 'text', text: prompt });
+    }
+
+    if (payload.input !== undefined) {
+        if (!Array.isArray(payload.input)) {
+            throw new RequestValidationError('input must be an array');
+        }
+        if (payload.input.length === 0) {
+            throw new RequestValidationError('input must contain at least one item');
+        }
+        if (payload.input.length > 64) {
+            throw new RequestValidationError('input exceeds maximum size of 64');
+        }
+
+        result.input = payload.input.map((entry, index) => {
+            const part = asObject(entry, `input[${index}]`);
+            const type = readRequiredString(part, 'type', { maxLength: 20, label: `input[${index}].type` });
+
+            if (type === 'text') {
+                assertAllowedKeys(part, ['type', 'text'], `input[${index}]`);
+                return {
+                    type: 'text' as const,
+                    text: readRequiredString(part, 'text', { maxLength: 100_000, trim: false, label: `input[${index}].text` }),
+                };
+            }
+
+            if (type === 'image') {
+                assertAllowedKeys(part, ['type', 'mimeType', 'data'], `input[${index}]`);
+                const mimeType = readRequiredString(part, 'mimeType', { maxLength: 120, label: `input[${index}].mimeType` });
+                if (!/^[a-z]+\/[a-z0-9.+-]+$/i.test(mimeType)) {
+                    throw new RequestValidationError(`input[${index}].mimeType must be a valid MIME type`);
+                }
+
+                const data = readRequiredString(part, 'data', { maxLength: 20_000_000, trim: true, label: `input[${index}].data` });
+                if (!/^[A-Za-z0-9+/=]+$/.test(data)) {
+                    throw new RequestValidationError(`input[${index}].data must be a base64 string`);
+                }
+
+                return {
+                    type: 'image' as const,
+                    mimeType,
+                    data,
+                };
+            }
+
+            throw new RequestValidationError(`input[${index}].type must be one of: text, image`);
+        });
+    }
 
     const provider = readOptionalString(payload, 'provider', { maxLength: 80 });
     if (provider) {
@@ -486,7 +565,7 @@ export function validateProxyInput(body: unknown): ProxyInput {
         const options = asObject(payload.options, 'options');
         assertAllowedKeys(
             options,
-            ['temperature', 'topP', 'thinkingBudget', 'maxTokens', 'outputMimeType', 'sampleCount', 'aspectRatio'],
+            ['temperature', 'topP', 'thinkingBudget', 'thinkingLevel', 'maxTokens', 'outputMimeType', 'sampleCount', 'aspectRatio', 'imageSize', 'personGeneration', 'responseModalities'],
             'options'
         );
 
@@ -498,6 +577,13 @@ export function validateProxyInput(body: unknown): ProxyInput {
 
         const thinkingBudget = readPositiveInteger(options, 'thinkingBudget', { max: 1_000_000 });
         if (thinkingBudget !== undefined) parsedOptions.thinkingBudget = thinkingBudget;
+        const thinkingLevel = readOptionalString(options, 'thinkingLevel', { maxLength: 20 });
+        if (thinkingLevel) {
+            if (!['MINIMAL', 'LOW', 'MEDIUM', 'HIGH'].includes(thinkingLevel)) {
+                throw new RequestValidationError('thinkingLevel must be one of: MINIMAL, LOW, MEDIUM, HIGH');
+            }
+            parsedOptions.thinkingLevel = thinkingLevel as NonNullable<ProxyInput['options']>['thinkingLevel'];
+        }
         const maxTokens = readPositiveInteger(options, 'maxTokens', { max: 1_000_000 });
         if (maxTokens !== undefined) parsedOptions.maxTokens = maxTokens;
         const sampleCount = readPositiveInteger(options, 'sampleCount', { max: 32 });
@@ -519,13 +605,45 @@ export function validateProxyInput(body: unknown): ProxyInput {
             parsedOptions.aspectRatio = aspectRatio;
         }
 
+        const imageSize = readOptionalString(options, 'imageSize', { maxLength: 20 });
+        if (imageSize) {
+            if (!['1K', '2K'].includes(imageSize)) {
+                throw new RequestValidationError('imageSize must be one of: 1K, 2K');
+            }
+            parsedOptions.imageSize = imageSize;
+        }
+
+        const personGeneration = readOptionalString(options, 'personGeneration', { maxLength: 20 });
+        if (personGeneration) {
+            if (!['DONT_ALLOW', 'ALLOW_ADULT'].includes(personGeneration)) {
+                throw new RequestValidationError('personGeneration must be one of: DONT_ALLOW, ALLOW_ADULT');
+            }
+            parsedOptions.personGeneration = personGeneration as NonNullable<ProxyInput['options']>['personGeneration'];
+        }
+
+        const responseModalities = readStringArray(options, 'responseModalities', { maxItems: 2, maxLength: 10 });
+        if (responseModalities) {
+            const normalized = responseModalities.map((modality) => modality.toUpperCase());
+            const invalid = normalized.filter((modality) => !['TEXT', 'IMAGE'].includes(modality));
+            if (invalid.length > 0) {
+                throw new RequestValidationError('responseModalities must contain only: TEXT, IMAGE');
+            }
+            parsedOptions.responseModalities = Array.from(new Set(normalized)) as NonNullable<ProxyInput['options']>['responseModalities'];
+        }
+
         if (Object.keys(parsedOptions).length > 0) {
             result.options = parsedOptions;
         }
     }
 
-    if (!result.prompt.trim()) {
-        throw new RequestValidationError('prompt is required');
+    if (result.input.length === 0) {
+        throw new RequestValidationError('input is required');
+    }
+
+    const hasUsableText = result.input.some((part) => part.type === 'text' && part.text.trim().length > 0);
+    const hasImage = result.input.some((part) => part.type === 'image');
+    if (!hasUsableText && !hasImage) {
+        throw new RequestValidationError('input must contain non-empty text or image data');
     }
 
     return result;

@@ -6,6 +6,8 @@ import {
     validateRulePayload,
 } from '../lib/request-validation.js';
 import * as ruleService from '../services/keyModelRule.service.js';
+import * as keyService from '../services/key.service.js';
+import * as modelService from '../services/model.service.js';
 
 export async function keyModelRuleRoutes(app: FastifyInstance): Promise<void> {
     // List all rules (optionally filtered by keyId or modelName)
@@ -30,6 +32,34 @@ export async function keyModelRuleRoutes(app: FastifyInstance): Promise<void> {
     }, async (request, reply) => {
         try {
             const payload = validateRulePayload(request.body);
+            const [key, model] = await Promise.all([
+                keyService.getKey(payload.keyId),
+                modelService.getModel(payload.modelId),
+            ]);
+
+            if (!key) {
+                reply.code(404).send({ status: 'error', message: 'API key not found' });
+                return;
+            }
+            if (!model) {
+                reply.code(404).send({ status: 'error', message: 'Model not found' });
+                return;
+            }
+            if (key.providerId !== model.providerId) {
+                reply.code(400).send({
+                    status: 'error',
+                    message: 'API key and model must belong to the same provider',
+                });
+                return;
+            }
+            if (model.name !== payload.modelName) {
+                reply.code(400).send({
+                    status: 'error',
+                    message: 'modelName must match the selected model',
+                });
+                return;
+            }
+
             const rule = await ruleService.createRule(payload);
             reply.code(201).send({ status: 'success', data: rule });
         } catch (error) {
@@ -47,6 +77,45 @@ export async function keyModelRuleRoutes(app: FastifyInstance): Promise<void> {
     }, async (request, reply) => {
         try {
             const payload = validateBulkRulePayload(request.body);
+            const [keys, models] = await Promise.all([
+                Promise.all(payload.keyIds.map((keyId) => keyService.getKey(keyId))),
+                Promise.all(payload.models.map((model) => modelService.getModel(model.id))),
+            ]);
+
+            const missingKeyId = keys.findIndex((key) => !key);
+            if (missingKeyId !== -1) {
+                reply.code(404).send({ status: 'error', message: `API key not found: ${payload.keyIds[missingKeyId]}` });
+                return;
+            }
+
+            const missingModelIndex = models.findIndex((model) => !model);
+            if (missingModelIndex !== -1) {
+                reply.code(404).send({ status: 'error', message: `Model not found: ${payload.models[missingModelIndex].id}` });
+                return;
+            }
+
+            const keyDocs = keys as NonNullable<typeof keys[number]>[];
+            const modelDocs = models as NonNullable<typeof models[number]>[];
+            const keyProviderIds = new Set(keyDocs.map((key) => key.providerId));
+            const modelProviderIds = new Set(modelDocs.map((model) => model.providerId));
+
+            if (keyProviderIds.size !== 1 || modelProviderIds.size !== 1 || [...keyProviderIds][0] !== [...modelProviderIds][0]) {
+                reply.code(400).send({
+                    status: 'error',
+                    message: 'All selected API keys and models must belong to the same provider',
+                });
+                return;
+            }
+
+            const mismatchedModelName = payload.models.find((entry, index) => modelDocs[index].name !== entry.name);
+            if (mismatchedModelName) {
+                reply.code(400).send({
+                    status: 'error',
+                    message: `Model name mismatch for model ${mismatchedModelName.id}`,
+                });
+                return;
+            }
+
             const result = await ruleService.bulkCreateRules(
                 payload.keyIds,
                 payload.models,

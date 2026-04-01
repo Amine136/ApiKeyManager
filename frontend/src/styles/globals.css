@@ -1483,3 +1483,117 @@ select.form-control {
     width: 100%;
   }
 }
+
+/* ===== Playground ===== */
+.playground-page {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
+
+.playground-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.9fr);
+  gap: 18px;
+}
+
+.playground-textarea {
+  min-height: 140px;
+  resize: vertical;
+}
+
+.playground-check-group {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.playground-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-secondary);
+  font-size: 13px;
+  margin-top: 10px;
+}
+
+.playground-preview {
+  margin-top: 12px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: rgba(12, 18, 31, 0.72);
+}
+
+.playground-preview img {
+  width: 72px;
+  height: 72px;
+  object-fit: cover;
+  border-radius: 12px;
+  border: 1px solid var(--border-color);
+}
+
+.playground-preview p {
+  margin: 4px 0 0;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.playground-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.playground-error {
+  margin-bottom: 14px;
+  padding: 12px 14px;
+  border: 1px solid rgba(239, 68, 68, 0.4);
+  background: rgba(239, 68, 68, 0.1);
+  color: #fecaca;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+}
+
+.playground-response-card {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.playground-response-block h4 {
+  margin: 0 0 10px;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.playground-response-block pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  padding: 12px;
+  border-radius: 12px;
+  background: rgba(8, 13, 24, 0.8);
+  border: 1px solid var(--border-color);
+  color: var(--text-primary);
+  font-size: 12px;
+  line-height: 1.5;
+  max-height: 320px;
+  overflow: auto;
+}
+
+.playground-result-image {
+  width: 100%;
+  display: block;
+  border-radius: 16px;
+  border: 1px solid var(--border-color);
+  background: rgba(8, 13, 24, 0.8);
+}
+
+@media (max-width: 980px) {
+  .playground-grid {
+    grid-template-columns: 1fr;
+  }
+}

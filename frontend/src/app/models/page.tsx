@@ -9,7 +9,10 @@ import { Skeleton } from '../../components/Skeleton';
 interface Model {
     id: string;
     name: string;
+    displayName: string;
     providerId: string;
+    inputModalities?: Array<'TEXT' | 'IMAGE'>;
+    outputModalities?: Array<'TEXT' | 'IMAGE'>;
 }
 
 interface Provider {
@@ -25,7 +28,14 @@ export default function ModelsPage() {
     const [providers, setProviders] = useState<Provider[]>([]);
     const [loading, setLoading] = useState(true);
     const [showModal, setShowModal] = useState(false);
-    const [form, setForm] = useState({ name: '', providerId: '' });
+    const [editingModelId, setEditingModelId] = useState<string | null>(null);
+    const [form, setForm] = useState({
+        name: '',
+        displayName: '',
+        providerId: '',
+        inputModalities: ['TEXT'] as Array<'TEXT' | 'IMAGE'>,
+        outputModalities: ['TEXT'] as Array<'TEXT' | 'IMAGE'>,
+    });
 
     useEffect(() => {
         if (!isLoading && !isAuthenticated) router.push('/login');
@@ -50,12 +60,69 @@ export default function ModelsPage() {
         return p?.displayName || p?.name || id;
     };
 
+    const toggleModality = (
+        field: 'inputModalities' | 'outputModalities',
+        modality: 'TEXT' | 'IMAGE'
+    ) => {
+        setForm((prev) => {
+            const current = prev[field];
+            const next = current.includes(modality)
+                ? current.filter((value) => value !== modality)
+                : [...current, modality];
+
+            return {
+                ...prev,
+                [field]: next.length > 0 ? next : [modality],
+            };
+        });
+    };
+
+    const resetForm = () => {
+        setEditingModelId(null);
+        setForm({
+            name: '',
+            displayName: '',
+            providerId: providers[0]?.id ?? '',
+            inputModalities: ['TEXT'],
+            outputModalities: ['TEXT'],
+        });
+    };
+
+    const openCreateModal = () => {
+        resetForm();
+        setShowModal(true);
+    };
+
+    const openEditModal = (model: Model) => {
+        setEditingModelId(model.id);
+        setForm({
+            name: model.name,
+            displayName: model.displayName || model.name,
+            providerId: model.providerId,
+            inputModalities: model.inputModalities ?? ['TEXT'],
+            outputModalities: model.outputModalities ?? ['TEXT'],
+        });
+        setShowModal(true);
+    };
+
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
         try {
-            await api.createModel({ name: form.name.trim(), providerId: form.providerId });
+            const payload = {
+                name: form.name.trim(),
+                displayName: form.displayName.trim(),
+                providerId: form.providerId,
+                inputModalities: form.inputModalities,
+                outputModalities: form.outputModalities,
+            };
+
+            if (editingModelId) {
+                await api.updateModel(editingModelId, payload);
+            } else {
+                await api.createModel(payload);
+            }
             setShowModal(false);
-            setForm(f => ({ ...f, name: '' }));
+            resetForm();
             loadData();
         } catch (e: any) { alert(e.message); }
     };
@@ -81,7 +148,7 @@ export default function ModelsPage() {
                     <h1>Models</h1>
                     <p>Define authorised models per provider</p>
                 </div>
-                <button className="btn btn-primary" onClick={() => setShowModal(true)}>+ Add Model</button>
+                <button className="btn btn-primary" onClick={openCreateModal}>+ Add Model</button>
             </div>
 
             {loading ? (
@@ -129,15 +196,22 @@ export default function ModelsPage() {
                             <table className="data-table">
                                 <thead>
                                     <tr>
+                                        <th>Display Name</th>
                                         <th>Model Name</th>
+                                        <th>Input</th>
+                                        <th>Output</th>
                                         <th style={{ textAlign: 'right' }}>Actions</th>
                                     </tr>
                                 </thead>
                                 <tbody>
                                     {pModels.map(m => (
                                         <tr key={m.id}>
+                                            <td><strong>{m.displayName || m.name}</strong></td>
                                             <td><strong>{m.name}</strong></td>
+                                            <td>{(m.inputModalities ?? ['TEXT']).join(', ')}</td>
+                                            <td>{(m.outputModalities ?? ['TEXT']).join(', ')}</td>
                                             <td className="text-right">
+                                                <button className="btn btn-primary btn-sm" style={{ marginRight: '8px' }} onClick={() => openEditModal(m)}>Edit</button>
                                                 <button className="btn btn-danger btn-sm" onClick={() => handleDelete(m.id)}>Delete</button>
                                             </td>
                                         </tr>
@@ -151,11 +225,11 @@ export default function ModelsPage() {
 
             {/* Modal */}
             {showModal && (
-                <div className="modal-overlay" onClick={() => setShowModal(false)}>
+                <div className="modal-overlay" onClick={() => { setShowModal(false); resetForm(); }}>
                     <div className="modal" onClick={e => e.stopPropagation()}>
                         <div className="modal-header">
-                            <h3>Add Model</h3>
-                            <button className="close-btn" onClick={() => setShowModal(false)}>✕</button>
+                            <h3>{editingModelId ? 'Edit Model' : 'Add Model'}</h3>
+                            <button className="close-btn" onClick={() => { setShowModal(false); resetForm(); }}>✕</button>
                         </div>
                         <form onSubmit={handleSubmit}>
                             <div className="modal-body">
@@ -166,13 +240,59 @@ export default function ModelsPage() {
                                     </select>
                                 </div>
                                 <div className="form-group">
-                                    <label>Model Name</label>
+                                    <label>Model ID</label>
                                     <input className="form-control" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} placeholder="gemini-2.5-pro" required />
+                                </div>
+                                <div className="form-group">
+                                    <label>Display Name</label>
+                                    <input className="form-control" value={form.displayName} onChange={e => setForm({ ...form, displayName: e.target.value })} placeholder="Gemini 2.5 Pro" required />
+                                </div>
+                                <div className="form-group">
+                                    <label>Input Modalities</label>
+                                    <div className="playground-check-group">
+                                        <label className="playground-check">
+                                            <input
+                                                type="checkbox"
+                                                checked={form.inputModalities.includes('TEXT')}
+                                                onChange={() => toggleModality('inputModalities', 'TEXT')}
+                                            />
+                                            <span>Text</span>
+                                        </label>
+                                        <label className="playground-check">
+                                            <input
+                                                type="checkbox"
+                                                checked={form.inputModalities.includes('IMAGE')}
+                                                onChange={() => toggleModality('inputModalities', 'IMAGE')}
+                                            />
+                                            <span>Image</span>
+                                        </label>
+                                    </div>
+                                </div>
+                                <div className="form-group">
+                                    <label>Output Modalities</label>
+                                    <div className="playground-check-group">
+                                        <label className="playground-check">
+                                            <input
+                                                type="checkbox"
+                                                checked={form.outputModalities.includes('TEXT')}
+                                                onChange={() => toggleModality('outputModalities', 'TEXT')}
+                                            />
+                                            <span>Text</span>
+                                        </label>
+                                        <label className="playground-check">
+                                            <input
+                                                type="checkbox"
+                                                checked={form.outputModalities.includes('IMAGE')}
+                                                onChange={() => toggleModality('outputModalities', 'IMAGE')}
+                                            />
+                                            <span>Image</span>
+                                        </label>
+                                    </div>
                                 </div>
                             </div>
                             <div className="modal-footer">
-                                <button type="button" className="btn btn-ghost" onClick={() => setShowModal(false)}>Cancel</button>
-                                <button type="submit" className="btn btn-primary">Add</button>
+                                <button type="button" className="btn btn-ghost" onClick={() => { setShowModal(false); resetForm(); }}>Cancel</button>
+                                <button type="submit" className="btn btn-primary">{editingModelId ? 'Save' : 'Add'}</button>
                             </div>
                         </form>
                     </div>

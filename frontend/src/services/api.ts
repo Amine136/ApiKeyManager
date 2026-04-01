@@ -1,4 +1,17 @@
-const API_URL = process.env.NEXT_PUBLIC_API_URL || '';
+const CONFIGURED_API_URL = process.env.NEXT_PUBLIC_API_URL?.trim() || '';
+
+function getApiUrl(): string {
+    if (typeof window === 'undefined') {
+        return CONFIGURED_API_URL;
+    }
+
+    const hostname = window.location.hostname;
+    const isLocalHost = hostname === 'localhost' || hostname === '127.0.0.1';
+
+    // Public deployments sit behind nginx on the same origin, while local dev
+    // still talks directly to the backend port.
+    return isLocalHost ? CONFIGURED_API_URL : '';
+}
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     const headers: Record<string, string> = {
@@ -9,7 +22,7 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
         headers['Content-Type'] = 'application/json';
     }
 
-    const res = await fetch(`${API_URL}${path}`, {
+    const res = await fetch(`${getApiUrl()}${path}`, {
         ...options,
         credentials: 'include',
         headers,
@@ -67,6 +80,7 @@ export const api = {
         return request<any>(`/api/v1/models${q}`);
     },
     createModel: (data: any) => request<any>('/api/v1/models', { method: 'POST', body: JSON.stringify(data) }),
+    updateModel: (id: string, data: any) => request<any>(`/api/v1/models/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
     deleteModel: (id: string) => request<any>(`/api/v1/models/${id}`, { method: 'DELETE' }),
 
     // Key-Model Rules
@@ -77,4 +91,11 @@ export const api = {
     createKeyModelRule: (data: any) => request<any>('/api/v1/key-model-rules', { method: 'POST', body: JSON.stringify(data) }),
     bulkCreateKeyModelRules: (data: any) => request<any>('/api/v1/key-model-rules/bulk', { method: 'POST', body: JSON.stringify(data) }),
     deleteKeyModelRule: (id: string) => request<any>(`/api/v1/key-model-rules/${id}`, { method: 'DELETE' }),
+
+    // Playground / proxy
+    proxy: (data: any, bearerToken?: string) => request<any>('/api/v1/proxy', {
+        method: 'POST',
+        body: JSON.stringify(data),
+        headers: bearerToken ? { Authorization: `Bearer ${bearerToken}` } : undefined,
+    }),
 };

@@ -1,12 +1,29 @@
-import { ProviderAdapter, ProxyInput, AdapterRequest, AdapterResponse } from './base.adapter.js';
+import {
+    ProviderAdapter,
+    ProxyInput,
+    AdapterRequest,
+    AdapterResponse,
+    getImageParts,
+    getTextParts,
+} from './base.adapter.js';
 
 export class OpenAIAdapter implements ProviderAdapter {
     buildRequest(params: ProxyInput, apiKey: string): AdapterRequest {
         const url = 'https://api.openai.com/v1/chat/completions';
 
+        const content: any[] = [
+            ...getTextParts(params).map((part) => ({ type: 'text', text: part.text })),
+            ...getImageParts(params).map((part) => ({
+                type: 'image_url',
+                image_url: {
+                    url: `data:${part.mimeType};base64,${part.data}`,
+                },
+            })),
+        ];
+
         const body: any = {
             model: params.model,
-            messages: [{ role: 'user', content: params.prompt }],
+            messages: [{ role: 'user', content: content.length === 1 && content[0].type === 'text' ? content[0].text : content }],
         };
 
         if (params.options?.temperature !== undefined) body.temperature = params.options.temperature;

@@ -192,12 +192,42 @@ POST /api/v1/proxy
 **Request:**
 ```json
 {
-  "prompt": "Hello, world!",
+  "input": [
+    { "type": "text", "text": "Hello, world!" }
+  ],
   "model": "gemini-2.5-flash",
   "provider": "google-gemini",
   "options": {
     "temperature": 0.8,
     "maxTokens": 1024
+  }
+}
+```
+
+Legacy compatibility:
+
+```json
+{
+  "prompt": "Hello, world!",
+  "model": "gemini-2.5-flash",
+  "provider": "google-gemini"
+}
+```
+
+Multimodal input example:
+
+```json
+{
+  "input": [
+    { "type": "text", "text": "Describe this product and make a matching ad image." },
+    { "type": "image", "mimeType": "image/jpeg", "data": "<base64-image>" }
+  ],
+  "model": "gemini-3-pro-image-preview",
+  "provider": "google-gemini",
+  "options": {
+    "responseModalities": ["TEXT", "IMAGE"],
+    "aspectRatio": "1:1",
+    "imageSize": "1K"
   }
 }
 ```

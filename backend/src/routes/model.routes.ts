@@ -32,6 +32,27 @@ export async function modelRoutes(app: FastifyInstance): Promise<void> {
         }
     });
 
+    // Update model
+    app.put<{ Params: { id: string } }>('/api/v1/models/:id', {
+        preHandler: [authenticateAdminSession],
+    }, async (request, reply) => {
+        try {
+            const payload = validateModelPayload(request.body);
+            const model = await modelService.updateModel(request.params.id, payload);
+            if (!model) {
+                reply.code(404).send({ status: 'error', message: 'Model not found' });
+                return;
+            }
+            reply.send({ status: 'success', data: model });
+        } catch (error) {
+            if (error instanceof RequestValidationError) {
+                reply.code(error.statusCode).send({ status: 'error', message: error.message });
+                return;
+            }
+            throw error;
+        }
+    });
+
     // Delete model
     app.delete<{ Params: { id: string } }>('/api/v1/models/:id', {
         preHandler: [authenticateAdminSession],

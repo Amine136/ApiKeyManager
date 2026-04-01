@@ -1,9 +1,15 @@
-import { ProviderAdapter, AdapterRequest, AdapterResponse, ProxyInput } from './base.adapter.js';
+import {
+    ProviderAdapter,
+    AdapterRequest,
+    AdapterResponse,
+    ProxyInput,
+    getCombinedTextPrompt,
+} from './base.adapter.js';
 
 /**
  * Custom provider adapter.
  * POSTs directly to the provider's baseUrl with:
- *   { prompt, model, options }
+ *   { input, prompt, model, options }
  * Expects back:
  *   { response: string, usage: { promptTokens, completionTokens } }
  */
@@ -22,7 +28,8 @@ export class CustomAdapter implements ProviderAdapter {
                 ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
             },
             body: {
-                prompt: input.prompt,
+                input: input.input,
+                prompt: getCombinedTextPrompt(input),
                 model: input.model,
                 options: input.options ?? {},
             },

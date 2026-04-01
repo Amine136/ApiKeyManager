@@ -33,6 +33,7 @@ interface ApiKey {
 interface Model {
     id: string;
     name: string;
+    displayName: string;
     status?: string;
     isActive?: boolean;
 }
@@ -232,6 +233,7 @@ export default function DashboardPage() {
                 return {
                     id: model.id,
                     name: model.name,
+                    displayName: model.displayName || model.name,
                     usedRequests,
                     remainingRequests: hasUnlimitedRequests ? null : Math.max(totalRequestLimit - usedRequests, 0),
                     remainingTokens: hasUnlimitedTokens ? null : Math.max(totalTokenLimit - usedTokens, 0),
@@ -437,7 +439,7 @@ export default function DashboardPage() {
                                             <div key={model.id} className="dashboard-model-row">
                                                 <span className="dashboard-model-rank">{index + 1}</span>
                                                 <div className="dashboard-model-copy">
-                                                    <strong>{model.name}</strong>
+                                                    <strong>{model.displayName}</strong>
                                                     <span>{model.usedRequests} successful requests today</span>
                                                     <span>
                                                         Requests left: {model.remainingRequests === null ? 'Unlimited' : model.remainingRequests}

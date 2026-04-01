@@ -10,6 +10,7 @@ import { finalizeRateLimitReservation, releaseRateLimitReservation, triggerCoold
 import type { Provider } from './provider.service.js';
 import { TTLCache } from '../lib/cache.js';
 import { env } from '../config/env.js';
+import { getImageParts, getTextParts } from '../adapters/base.adapter.js';
 
 export const activeProviderCache = new TTLCache<Provider | null>(5 * 60 * 1000);
 const activeProviderInFlight = new Map<string, Promise<Provider | null>>();
@@ -42,6 +43,46 @@ function inferProvider(model: string): string | null {
     if (lower.includes('imagen')) return 'google-imagen';
     if (lower.includes('gpt') || lower.includes('o1') || lower.includes('o3') || lower.includes('o4')) return 'openai';
     return null;
+}
+
+function inferModelCapabilities(model: string, providerType: string): {
+    inputModalities: Array<'TEXT' | 'IMAGE'>;
+    outputModalities: Array<'TEXT' | 'IMAGE'>;
+} {
+    if (providerType === 'google-imagen') {
+        return {
+            inputModalities: ['TEXT'],
+            outputModalities: ['IMAGE'],
+        };
+    }
+
+    if (providerType === 'google-gemini' && model.toLowerCase().includes('image')) {
+        return {
+            inputModalities: ['TEXT', 'IMAGE'],
+            outputModalities: ['TEXT', 'IMAGE'],
+        };
+    }
+
+    return {
+        inputModalities: ['TEXT'],
+        outputModalities: ['TEXT'],
+    };
+}
+
+function getRequestedOutputModalities(input: ProxyInput, providerType: string): Array<'TEXT' | 'IMAGE'> {
+    if (input.options?.responseModalities && input.options.responseModalities.length > 0) {
+        return input.options.responseModalities;
+    }
+
+    if (providerType === 'google-imagen') {
+        return ['IMAGE'];
+    }
+
+    if (providerType === 'google-gemini' && input.model.toLowerCase().includes('image')) {
+        return ['IMAGE'];
+    }
+
+    return ['TEXT'];
 }
 
 function extractProviderErrorMessage(rawBody: any): string {
@@ -155,6 +196,43 @@ export async function handleProxy(
         };
     }
 
+    const { getModelByNameAndProvider } = await import('./model.service.js');
+    const configuredModel = await getModelByNameAndProvider(input.model, providerSnapshot.id!);
+    const capabilities = configuredModel
+        ? {
+            inputModalities: configuredModel.inputModalities ?? inferModelCapabilities(input.model, providerSnapshot.type).inputModalities,
+            outputModalities: configuredModel.outputModalities ?? inferModelCapabilities(input.model, providerSnapshot.type).outputModalities,
+        }
+        : inferModelCapabilities(input.model, providerSnapshot.type);
+
+    const requestedInputModalities = Array.from(new Set([
+        ...(getTextParts(input).some((part) => part.text.trim()) ? ['TEXT' as const] : []),
+        ...(getImageParts(input).length > 0 ? ['IMAGE' as const] : []),
+    ]));
+    const requestedOutputModalities = getRequestedOutputModalities(input, providerSnapshot.type);
+
+    const invalidInputModality = requestedInputModalities.find((modality) => !capabilities.inputModalities.includes(modality));
+    if (invalidInputModality) {
+        return {
+            statusCode: 400,
+            body: {
+                status: 'error',
+                message: `Model "${input.model}" does not support ${invalidInputModality.toLowerCase()} input`,
+            },
+        };
+    }
+
+    const invalidOutputModality = requestedOutputModalities.find((modality) => !capabilities.outputModalities.includes(modality));
+    if (invalidOutputModality) {
+        return {
+            statusCode: 400,
+            body: {
+                status: 'error',
+                message: `Model "${input.model}" does not support ${invalidOutputModality.toLowerCase()} output`,
+            },
+        };
+    }
+
     // 2. Select API key (model-aware: checks keyModelRules for authorisation + rate limits)
     const keyResult = await selectKey(providerSnapshot.id!, input.model, input.options?.maxTokens ?? 0);
     if (!keyResult || 'rejections' in keyResult) {
@@ -199,7 +277,19 @@ export async function handleProxy(
         };
     }
 
-    const adapterReq = adapter.buildRequest(input, decryptedKey);
+    let adapterReq;
+    try {
+        adapterReq = adapter.buildRequest(input, decryptedKey);
+    } catch (error: any) {
+        await releaseRateLimitReservation(reservation);
+        return {
+            statusCode: 400,
+            body: {
+                status: 'error',
+                message: error?.message ?? 'Invalid request for the selected provider',
+            },
+        };
+    }
 
     // 4. Forward request to provider
     const controller = new AbortController();
@@ -321,6 +411,7 @@ export async function handleProxy(
                     provider: providerSnapshot.name,
                     model: input.model,
                     response: parsed.response,
+                    outputs: parsed.outputs ?? null,
                     usage: parsed.usage ?? null,
                 },
                 meta: {
