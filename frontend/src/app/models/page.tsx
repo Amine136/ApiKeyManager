@@ -11,6 +11,8 @@ interface Model {
     name: string;
     displayName: string;
     providerId: string;
+    cost?: string;
+    description?: string;
     inputModalities?: Array<'TEXT' | 'IMAGE'>;
     outputModalities?: Array<'TEXT' | 'IMAGE'>;
 }
@@ -19,6 +21,13 @@ interface Provider {
     id: string;
     name: string;
     displayName: string;
+}
+
+function getProviderSectionTone(provider: Provider): 'purple' | 'teal' | 'default' {
+    const value = `${provider.name} ${provider.displayName}`.toLowerCase();
+    if (value.includes('imagen')) return 'purple';
+    if (value.includes('gemini')) return 'teal';
+    return 'default';
 }
 
 export default function ModelsPage() {
@@ -33,6 +42,8 @@ export default function ModelsPage() {
         name: '',
         displayName: '',
         providerId: '',
+        cost: '',
+        description: '',
         inputModalities: ['TEXT'] as Array<'TEXT' | 'IMAGE'>,
         outputModalities: ['TEXT'] as Array<'TEXT' | 'IMAGE'>,
     });
@@ -53,11 +64,6 @@ export default function ModelsPage() {
             if (provRes.data.length > 0) setForm(f => ({ ...f, providerId: provRes.data[0].id }));
         } catch (e) { console.error(e); }
         finally { setLoading(false); }
-    };
-
-    const getProviderName = (id: string) => {
-        const p = providers.find(p => p.id === id);
-        return p?.displayName || p?.name || id;
     };
 
     const toggleModality = (
@@ -83,6 +89,8 @@ export default function ModelsPage() {
             name: '',
             displayName: '',
             providerId: providers[0]?.id ?? '',
+            cost: '',
+            description: '',
             inputModalities: ['TEXT'],
             outputModalities: ['TEXT'],
         });
@@ -99,6 +107,8 @@ export default function ModelsPage() {
             name: model.name,
             displayName: model.displayName || model.name,
             providerId: model.providerId,
+            cost: model.cost || '',
+            description: model.description || '',
             inputModalities: model.inputModalities ?? ['TEXT'],
             outputModalities: model.outputModalities ?? ['TEXT'],
         });
@@ -112,6 +122,8 @@ export default function ModelsPage() {
                 name: form.name.trim(),
                 displayName: form.displayName.trim(),
                 providerId: form.providerId,
+                cost: form.cost.trim() || undefined,
+                description: form.description.trim() || undefined,
                 inputModalities: form.inputModalities,
                 outputModalities: form.outputModalities,
             };
@@ -148,33 +160,47 @@ export default function ModelsPage() {
                     <h1>Models</h1>
                     <p>Define authorised models per provider</p>
                 </div>
-                <button className="btn btn-primary" onClick={openCreateModal}>+ Add Model</button>
+                <button className="btn models-add-btn" onClick={openCreateModal}>+ Add Model</button>
             </div>
 
             {loading ? (
-                <div className="card">
-                    <div className="card-header">
-                        <Skeleton width="100px" height={22} borderRadius={20} />
+                <div className="models-section">
+                    <div className="models-section-header">
+                        <Skeleton width="140px" height={28} borderRadius={999} />
+                        <div className="models-section-rule" />
+                        <Skeleton width="72px" height={18} borderRadius={999} />
                     </div>
-                    <div className="card-body" style={{ padding: 0 }}>
-                        <table className="data-table">
-                            <thead>
-                                <tr>
-                                    <th>Model Name</th>
-                                    <th style={{ textAlign: 'right' }}>Actions</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {Array.from({ length: 2 }).map((_, i) => (
-                                    <tr key={i}>
-                                        <td><Skeleton width="150px" height={18} /></td>
-                                        <td className="text-right">
-                                            <Skeleton width="58px" height={26} borderRadius={4} style={{ display: 'inline-block' }} />
-                                        </td>
-                                    </tr>
-                                ))}
-                            </tbody>
-                        </table>
+                    <div className="models-grid">
+                        {Array.from({ length: 4 }).map((_, i) => (
+                            <div key={i} className="models-card">
+                                <div className="models-card-top">
+                                    <div>
+                                        <Skeleton width="120px" height={18} />
+                                        <div style={{ marginTop: '8px' }}>
+                                            <Skeleton width="150px" height={12} />
+                                        </div>
+                                    </div>
+                                    <Skeleton width="58px" height={24} borderRadius={999} />
+                                </div>
+                                <div className="models-card-description">
+                                    <Skeleton width="100%" height={14} />
+                                    <div style={{ marginTop: '8px' }}>
+                                        <Skeleton width="72%" height={14} />
+                                    </div>
+                                </div>
+                                <div className="models-card-footer">
+                                    <div style={{ display: 'flex', gap: '8px' }}>
+                                        <Skeleton width="44px" height={24} borderRadius={999} />
+                                        <Skeleton width="16px" height={14} />
+                                        <Skeleton width="50px" height={24} borderRadius={999} />
+                                    </div>
+                                    <div style={{ display: 'flex', gap: '8px' }}>
+                                        <Skeleton width="52px" height={30} borderRadius={10} />
+                                        <Skeleton width="62px" height={30} borderRadius={10} />
+                                    </div>
+                                </div>
+                            </div>
+                        ))}
                     </div>
                 </div>
             ) : models.length === 0 ? (
@@ -185,42 +211,62 @@ export default function ModelsPage() {
                     </div>
                 </div>
             ) : (
-                grouped.map(({ provider, models: pModels }) => (
-                    <div key={provider.id} className="card" style={{ marginBottom: '16px' }}>
-                        <div className="card-header">
-                            <h3 style={{ margin: 0, fontSize: '15px' }}>
-                                <span className="badge badge-info" style={{ marginRight: '8px' }}>{provider.displayName || provider.name}</span>
-                            </h3>
+                grouped.map(({ provider, models: pModels }) => {
+                    const tone = getProviderSectionTone(provider);
+
+                    return (
+                    <section
+                        key={provider.id}
+                        className={`models-section models-section-${tone}`}
+                    >
+                        <div className="models-section-header">
+                            <div className="models-provider-pill">
+                                <span className="models-provider-pill-dot" />
+                                <span>{provider.displayName || provider.name}</span>
+                            </div>
+                            <div className="models-section-rule" />
+                            <div className="models-count-label">{pModels.length} {pModels.length === 1 ? 'model' : 'models'}</div>
                         </div>
-                        <div className="card-body" style={{ padding: 0 }}>
-                            <table className="data-table">
-                                <thead>
-                                    <tr>
-                                        <th>Display Name</th>
-                                        <th>Model Name</th>
-                                        <th>Input</th>
-                                        <th>Output</th>
-                                        <th style={{ textAlign: 'right' }}>Actions</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {pModels.map(m => (
-                                        <tr key={m.id}>
-                                            <td><strong>{m.displayName || m.name}</strong></td>
-                                            <td><strong>{m.name}</strong></td>
-                                            <td>{(m.inputModalities ?? ['TEXT']).join(', ')}</td>
-                                            <td>{(m.outputModalities ?? ['TEXT']).join(', ')}</td>
-                                            <td className="text-right">
-                                                <button className="btn btn-primary btn-sm" style={{ marginRight: '8px' }} onClick={() => openEditModal(m)}>Edit</button>
-                                                <button className="btn btn-danger btn-sm" onClick={() => handleDelete(m.id)}>Delete</button>
-                                            </td>
-                                        </tr>
-                                    ))}
-                                </tbody>
-                            </table>
+                        <div className="models-grid">
+                            {pModels.map(m => (
+                                <article key={m.id} className="models-card">
+                                    <div className="models-card-top">
+                                        <div className="models-card-title-wrap">
+                                            <div className="models-card-title">{m.displayName || m.name}</div>
+                                            <div className="models-card-id">{m.name}</div>
+                                        </div>
+                                        <div className="models-cost-pill">{m.cost || '—'}</div>
+                                    </div>
+
+                                    <div className="models-card-description">
+                                        {m.description || 'No description provided for this model yet.'}
+                                    </div>
+
+                                    <div className="models-card-footer">
+                                        <div className="models-io-row">
+                                            {(m.inputModalities ?? ['TEXT']).map((modality) => (
+                                                <span key={`in-${m.id}-${modality}`} className={`models-io-chip models-io-chip-${modality.toLowerCase()}`}>
+                                                    {modality}
+                                                </span>
+                                            ))}
+                                            <span className="models-io-arrow">→</span>
+                                            {(m.outputModalities ?? ['TEXT']).map((modality) => (
+                                                <span key={`out-${m.id}-${modality}`} className={`models-io-chip models-io-chip-${modality.toLowerCase()}`}>
+                                                    {modality}
+                                                </span>
+                                            ))}
+                                        </div>
+
+                                        <div className="models-card-actions">
+                                            <button className="models-action-btn models-action-btn-edit" onClick={() => openEditModal(m)}>Edit</button>
+                                            <button className="models-action-btn models-action-btn-delete" onClick={() => handleDelete(m.id)}>Delete</button>
+                                        </div>
+                                    </div>
+                                </article>
+                            ))}
                         </div>
-                    </div>
-                ))
+                    </section>
+                )})
             )}
 
             {/* Modal */}
@@ -246,6 +292,14 @@ export default function ModelsPage() {
                                 <div className="form-group">
                                     <label>Display Name</label>
                                     <input className="form-control" value={form.displayName} onChange={e => setForm({ ...form, displayName: e.target.value })} placeholder="Gemini 2.5 Pro" required />
+                                </div>
+                                <div className="form-group">
+                                    <label>Cost</label>
+                                    <input className="form-control" value={form.cost} onChange={e => setForm({ ...form, cost: e.target.value })} placeholder="$0.03 / 1K tokens" />
+                                </div>
+                                <div className="form-group">
+                                    <label>Description</label>
+                                    <textarea className="form-control" value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} placeholder="Fast multimodal model for image and text generation." rows={3} />
                                 </div>
                                 <div className="form-group">
                                     <label>Input Modalities</label>

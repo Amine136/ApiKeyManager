@@ -394,11 +394,13 @@ export function validateModelPayload(body: unknown): {
     name: string;
     displayName: string;
     providerId: string;
+    cost?: string;
+    description?: string;
     inputModalities: Array<'TEXT' | 'IMAGE'>;
     outputModalities: Array<'TEXT' | 'IMAGE'>;
 } {
     const payload = asObject(body, 'request body');
-    assertAllowedKeys(payload, ['name', 'displayName', 'providerId', 'inputModalities', 'outputModalities'], 'request body');
+    assertAllowedKeys(payload, ['name', 'displayName', 'providerId', 'cost', 'description', 'inputModalities', 'outputModalities'], 'request body');
 
     const inputModalities = readStringArray(payload, 'inputModalities', { maxItems: 2, maxLength: 10 });
     const outputModalities = readStringArray(payload, 'outputModalities', { maxItems: 2, maxLength: 10 });
@@ -423,6 +425,8 @@ export function validateModelPayload(body: unknown): {
         name: readRequiredString(payload, 'name', { maxLength: 160 }),
         displayName: readRequiredString(payload, 'displayName', { maxLength: 160 }),
         providerId: readRequiredString(payload, 'providerId', { maxLength: 120 }),
+        cost: readOptionalString(payload, 'cost', { maxLength: 120 }),
+        description: readOptionalString(payload, 'description', { maxLength: 1000 }),
         inputModalities: normalizeModalities(inputModalities, 'inputModalities'),
         outputModalities: normalizeModalities(outputModalities, 'outputModalities'),
     };

@@ -1,9 +1,39 @@
 import { FastifyInstance } from 'fastify';
-import { authenticateAdminSession } from '../middleware/auth.js';
+import { authenticate, authenticateAdminSession } from '../middleware/auth.js';
 import { RequestValidationError, validateModelPayload } from '../lib/request-validation.js';
 import * as modelService from '../services/model.service.js';
+import { consumeRateLimit } from '../lib/request-throttle.js';
 
 export async function modelRoutes(app: FastifyInstance): Promise<void> {
+    // Client-safe available models list
+    app.get('/api/v1/models/available', {
+        preHandler: [authenticate],
+    }, async (request, reply) => {
+        const ipRate = await consumeRateLimit(`models-available:ip:${request.ip}`, 60, 60_000);
+        if (!ipRate.allowed) {
+            reply.header('Retry-After', String(ipRate.retryAfterSeconds));
+            reply.code(429).send({ status: 'error', message: 'Too many requests from this IP. Please retry later.' });
+            return;
+        }
+
+        const clientRate = await consumeRateLimit(`models-available:client:${request.client!.id}`, 30, 60_000);
+        if (!clientRate.allowed) {
+            reply.header('Retry-After', String(clientRate.retryAfterSeconds));
+            reply.code(429).send({ status: 'error', message: 'Client request rate exceeded. Please retry later.' });
+            return;
+        }
+
+        const query = request.query as { format?: string };
+        if (query.format === 'catalog') {
+            const catalog = await modelService.getAvailableModelCatalog();
+            reply.send({ status: 'success', data: catalog });
+            return;
+        }
+
+        const models = await modelService.listAvailableModels();
+        reply.send({ status: 'success', data: models });
+    });
+
     // List all models
     app.get('/api/v1/models', {
         preHandler: [authenticateAdminSession],

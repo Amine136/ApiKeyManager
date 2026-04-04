@@ -18,6 +18,7 @@ export function invalidateRuleCache(): void {
     allRulesCache.invalidate();
     rulesByKeyInFlight.clear();
     allRulesInFlight = null;
+    import('./model.service.js').then(m => m.invalidateAvailableModelsCache()).catch(console.error);
 }
 
 export interface KeyModelRule {

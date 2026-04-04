@@ -20,6 +20,7 @@ export function invalidateKeyCache(): void {
     byProviderCache.invalidate();
     listInFlight = null;
     byProviderInFlight.clear();
+    import('./model.service.js').then(m => m.invalidateAvailableModelsCache()).catch(console.error);
 }
 
 export interface ApiKeyRules {

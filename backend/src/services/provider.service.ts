@@ -13,6 +13,7 @@ export function invalidateProviderCache(): void {
     nameCache.invalidate();
     activeNameCache.invalidate();
     import('./proxy.service.js').then(m => m.invalidateActiveProviderResolverCache()).catch(console.error);
+    import('./model.service.js').then(m => m.invalidateAvailableModelsCache()).catch(console.error);
 }
 
 export type ProviderType = 'google-gemini' | 'google-imagen' | 'openai' | 'custom';
