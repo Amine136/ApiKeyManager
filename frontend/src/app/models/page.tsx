@@ -13,6 +13,7 @@ interface Model {
     providerId: string;
     cost?: string;
     description?: string;
+    isFrozen?: boolean;
     inputModalities?: Array<'TEXT' | 'IMAGE'>;
     outputModalities?: Array<'TEXT' | 'IMAGE'>;
 }
@@ -44,6 +45,7 @@ export default function ModelsPage() {
         providerId: '',
         cost: '',
         description: '',
+        isFrozen: false,
         inputModalities: ['TEXT'] as Array<'TEXT' | 'IMAGE'>,
         outputModalities: ['TEXT'] as Array<'TEXT' | 'IMAGE'>,
     });
@@ -91,6 +93,7 @@ export default function ModelsPage() {
             providerId: providers[0]?.id ?? '',
             cost: '',
             description: '',
+            isFrozen: false,
             inputModalities: ['TEXT'],
             outputModalities: ['TEXT'],
         });
@@ -109,6 +112,7 @@ export default function ModelsPage() {
             providerId: model.providerId,
             cost: model.cost || '',
             description: model.description || '',
+            isFrozen: Boolean(model.isFrozen),
             inputModalities: model.inputModalities ?? ['TEXT'],
             outputModalities: model.outputModalities ?? ['TEXT'],
         });
@@ -124,6 +128,7 @@ export default function ModelsPage() {
                 providerId: form.providerId,
                 cost: form.cost.trim() || undefined,
                 description: form.description.trim() || undefined,
+                isFrozen: form.isFrozen,
                 inputModalities: form.inputModalities,
                 outputModalities: form.outputModalities,
             };
@@ -143,6 +148,14 @@ export default function ModelsPage() {
         if (!confirm('Delete this model? Existing rules that reference it will also stop working.')) return;
         try { await api.deleteModel(id); loadData(); }
         catch (e: any) { alert(e.message); }
+    };
+
+    const handleFreezeToggle = async (id: string, isFrozen?: boolean) => {
+        if (!confirm(`${isFrozen ? 'Unfreeze' : 'Freeze'} this model? ${isFrozen ? 'It will start accepting requests again.' : 'It will stop accepting requests and disappear from the public catalog.'}`)) return;
+        try {
+            await api.toggleModelFreeze(id);
+            loadData();
+        } catch (e: any) { alert(e.message); }
     };
 
     if (isLoading || !isAuthenticated) return null;
@@ -235,7 +248,10 @@ export default function ModelsPage() {
                                             <div className="models-card-title">{m.displayName || m.name}</div>
                                             <div className="models-card-id">{m.name}</div>
                                         </div>
-                                        <div className="models-cost-pill">{m.cost || '—'}</div>
+                                        <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                                            {m.isFrozen && <div className="badge badge-warning">Frozen</div>}
+                                            <div className="models-cost-pill">{m.cost || '—'}</div>
+                                        </div>
                                     </div>
 
                                     <div className="models-card-description">
@@ -258,6 +274,9 @@ export default function ModelsPage() {
                                         </div>
 
                                         <div className="models-card-actions">
+                                            <button className="models-action-btn models-action-btn-freeze" onClick={() => handleFreezeToggle(m.id, m.isFrozen)}>
+                                                {m.isFrozen ? 'Unfreeze' : 'Freeze'}
+                                            </button>
                                             <button className="models-action-btn models-action-btn-edit" onClick={() => openEditModal(m)}>Edit</button>
                                             <button className="models-action-btn models-action-btn-delete" onClick={() => handleDelete(m.id)}>Delete</button>
                                         </div>
@@ -300,6 +319,16 @@ export default function ModelsPage() {
                                 <div className="form-group">
                                     <label>Description</label>
                                     <textarea className="form-control" value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} placeholder="Fast multimodal model for image and text generation." rows={3} />
+                                </div>
+                                <div className="form-group">
+                                    <label className="playground-check">
+                                        <input
+                                            type="checkbox"
+                                            checked={form.isFrozen}
+                                            onChange={(e) => setForm({ ...form, isFrozen: e.target.checked })}
+                                        />
+                                        <span>Freeze this model and stop accepting requests</span>
+                                    </label>
                                 </div>
                                 <div className="form-group">
                                     <label>Input Modalities</label>

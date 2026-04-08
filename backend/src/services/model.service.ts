@@ -3,14 +3,19 @@ import { TTLCache } from '../lib/cache.js';
 import { listProviders } from './provider.service.js';
 import { listKeys } from './key.service.js';
 import { listAllRules } from './keyModelRule.service.js';
+import { createHash } from 'crypto';
 
 const COLLECTION = 'models';
+const CATALOG_STATE_COLLECTION = '_system';
+const CATALOG_STATE_DOC = 'availableModelCatalogState';
 const listCache = new TTLCache<Model[]>(2 * 60 * 1000);
 const byProviderCache = new TTLCache<Model[]>(2 * 60 * 1000);
 const availableModelsCache = new TTLCache<AvailableModelSummary[]>(60 * 1000);
 let listInFlight: Promise<Model[]> | null = null;
 const byProviderInFlight = new Map<string, Promise<Model[]>>();
 let availableModelsInFlight: Promise<AvailableModelSummary[]> | null = null;
+let catalogSyncInFlight: Promise<void> | null = null;
+let catalogSyncTimer: NodeJS.Timeout | null = null;
 
 function logModelRead(event: string, details: Record<string, unknown>): void {
     console.info(`[MODEL_READ] ${event} ${JSON.stringify(details)}`);
@@ -23,11 +28,13 @@ export function invalidateModelCache(): void {
     listInFlight = null;
     byProviderInFlight.clear();
     availableModelsInFlight = null;
+    scheduleCatalogSync();
 }
 
 export function invalidateAvailableModelsCache(): void {
     availableModelsCache.invalidate();
     availableModelsInFlight = null;
+    scheduleCatalogSync();
 }
 
 export interface Model {
@@ -37,6 +44,7 @@ export interface Model {
     providerId: string;
     cost?: string;
     description?: string;
+    isFrozen?: boolean;
     inputModalities?: Array<'TEXT' | 'IMAGE'>;
     outputModalities?: Array<'TEXT' | 'IMAGE'>;
     createdAt?: Date;
@@ -142,10 +150,10 @@ export async function getModelByNameAndProvider(name: string, providerId: string
 }
 
 export async function createModel(
-    data: Pick<Model, 'name' | 'displayName' | 'providerId' | 'cost' | 'description' | 'inputModalities' | 'outputModalities'>
+    data: Pick<Model, 'name' | 'displayName' | 'providerId' | 'cost' | 'description' | 'isFrozen' | 'inputModalities' | 'outputModalities'>
 ): Promise<Model> {
     const now = new Date();
-    const payload = { ...data, createdAt: now, updatedAt: now };
+    const payload = { ...data, isFrozen: data.isFrozen ?? false, createdAt: now, updatedAt: now };
     const docRef = await db.collection(COLLECTION).add(payload);
     invalidateModelCache();
     return { id: docRef.id, ...payload };
@@ -153,7 +161,7 @@ export async function createModel(
 
 export async function updateModel(
     id: string,
-    data: Pick<Model, 'name' | 'displayName' | 'providerId' | 'cost' | 'description' | 'inputModalities' | 'outputModalities'>
+    data: Pick<Model, 'name' | 'displayName' | 'providerId' | 'cost' | 'description' | 'isFrozen' | 'inputModalities' | 'outputModalities'>
 ): Promise<Model | null> {
     const docRef = db.collection(COLLECTION).doc(id);
     const doc = await docRef.get();
@@ -161,6 +169,7 @@ export async function updateModel(
 
     const payload = {
         ...data,
+        isFrozen: data.isFrozen ?? false,
         updatedAt: new Date(),
     };
 
@@ -175,6 +184,19 @@ export async function deleteModel(id: string): Promise<boolean> {
     await db.collection(COLLECTION).doc(id).delete();
     invalidateModelCache();
     return true;
+}
+
+export async function toggleModelFreeze(id: string): Promise<Model | null> {
+    const docRef = db.collection(COLLECTION).doc(id);
+    const doc = await docRef.get();
+    if (!doc.exists) return null;
+
+    const current = doc.data() as Model;
+    const nextFrozen = !Boolean(current.isFrozen);
+    const updatedAt = new Date();
+    await docRef.update({ isFrozen: nextFrozen, updatedAt });
+    invalidateModelCache();
+    return { id, ...current, isFrozen: nextFrozen, updatedAt } as Model;
 }
 
 function inferModelCapabilities(model: Model, providerType: string): {
@@ -228,6 +250,7 @@ export async function listAvailableModels(): Promise<AvailableModelSummary[]> {
 
         const result = models
             .filter((model) => model.id && activeProviderIds.has(model.providerId))
+            .filter((model) => !model.isFrozen)
             .filter((model) => {
                 const provider = activeProviders.find((entry) => entry.id === model.providerId);
                 if (!provider) return false;
@@ -287,6 +310,10 @@ function classifyAvailableModel(model: AvailableModelSummary): 'text' | 'image' 
 
 export async function getAvailableModelCatalog(): Promise<AvailableModelCatalog> {
     const models = await listAvailableModels();
+    return buildAvailableModelCatalog(models);
+}
+
+function buildAvailableModelCatalog(models: AvailableModelSummary[]): AvailableModelCatalog {
     const catalog: AvailableModelCatalog = {
         model_catalog: {
             text: {},
@@ -309,4 +336,63 @@ export async function getAvailableModelCatalog(): Promise<AvailableModelCatalog>
     }
 
     return catalog;
+}
+
+function scheduleCatalogSync(): void {
+    if (catalogSyncTimer) {
+        clearTimeout(catalogSyncTimer);
+    }
+    catalogSyncTimer = setTimeout(() => {
+        catalogSyncTimer = null;
+        syncCatalogStateAndNotify().catch((error) => {
+            console.error('[MODEL_CATALOG] sync_failed', error);
+        });
+    }, 500);
+}
+
+async function syncCatalogStateAndNotify(): Promise<void> {
+    if (catalogSyncInFlight) {
+        return catalogSyncInFlight;
+    }
+
+    catalogSyncInFlight = (async () => {
+        const models = await listAvailableModels();
+        const catalog = buildAvailableModelCatalog(models);
+        const serialized = JSON.stringify(catalog);
+        const hash = createHash('sha256').update(serialized).digest('hex');
+        const docRef = db.collection(CATALOG_STATE_COLLECTION).doc(CATALOG_STATE_DOC);
+        const doc = await docRef.get();
+
+        const previous = doc.exists ? doc.data() as { hash?: string; version?: string } : null;
+        const previousHash = previous?.hash ?? null;
+        const previousVersion = Number(previous?.version ?? 0);
+        const updatedAt = new Date();
+
+        if (!previousHash) {
+            await docRef.set({
+                hash,
+                version: '1',
+                updatedAt,
+            }, { merge: true });
+            return;
+        }
+
+        if (previousHash === hash) {
+            return;
+        }
+
+        const nextVersion = String(previousVersion + 1);
+        await docRef.set({
+            hash,
+            version: nextVersion,
+            updatedAt,
+        }, { merge: true });
+
+        const { notifyCatalogWebhookSubscribers } = await import('./client.service.js');
+        await notifyCatalogWebhookSubscribers({ version: nextVersion, updatedAt });
+    })().finally(() => {
+        catalogSyncInFlight = null;
+    });
+
+    return catalogSyncInFlight;
 }

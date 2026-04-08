@@ -14,7 +14,12 @@ export interface ImageInputPart {
     data: string;
 }
 
-export type ProxyInputPart = TextInputPart | ImageInputPart;
+export interface ImageUrlInputPart {
+    type: 'image_url';
+    url: string;
+}
+
+export type ProxyInputPart = TextInputPart | ImageInputPart | ImageUrlInputPart;
 
 export interface ProxyInput {
     input: ProxyInputPart[];
@@ -66,6 +71,10 @@ export function getTextParts(input: ProxyInput): TextInputPart[] {
 
 export function getImageParts(input: ProxyInput): ImageInputPart[] {
     return input.input.filter((part): part is ImageInputPart => part.type === 'image');
+}
+
+export function getImageUrlParts(input: ProxyInput): ImageUrlInputPart[] {
+    return input.input.filter((part): part is ImageUrlInputPart => part.type === 'image_url');
 }
 
 export function getCombinedTextPrompt(input: ProxyInput): string {

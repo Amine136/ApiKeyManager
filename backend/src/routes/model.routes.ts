@@ -83,6 +83,17 @@ export async function modelRoutes(app: FastifyInstance): Promise<void> {
         }
     });
 
+    app.patch<{ Params: { id: string } }>('/api/v1/models/:id/freeze', {
+        preHandler: [authenticateAdminSession],
+    }, async (request, reply) => {
+        const model = await modelService.toggleModelFreeze(request.params.id);
+        if (!model) {
+            reply.code(404).send({ status: 'error', message: 'Model not found' });
+            return;
+        }
+        reply.send({ status: 'success', data: model });
+    });
+
     // Delete model
     app.delete<{ Params: { id: string } }>('/api/v1/models/:id', {
         preHandler: [authenticateAdminSession],

@@ -1806,6 +1806,16 @@ select.form-control {
   color: var(--text-primary);
 }
 
+.models-action-btn-freeze {
+  color: var(--warning);
+  border-color: rgba(245, 158, 11, 0.4);
+}
+
+.models-action-btn-freeze:hover {
+  background: var(--warning-bg);
+  border-color: rgba(245, 158, 11, 0.55);
+}
+
 .models-action-btn-delete {
   color: var(--danger);
   border-color: rgba(239, 68, 68, 0.45);

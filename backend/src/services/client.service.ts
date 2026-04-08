@@ -1,5 +1,9 @@
 import { db } from '../lib/firebase.js';
 import { createHash, randomBytes } from 'crypto';
+import { encrypt, decrypt } from '../lib/encryption.js';
+import { lookup } from 'dns/promises';
+import { isIP } from 'net';
+import { RequestValidationError } from '../lib/request-validation.js';
 
 const COLLECTION = 'clients';
 
@@ -29,8 +33,99 @@ export interface Client {
     expiresAt?: Date | null;
     lastUsedAt?: Date | null;
     lastRotatedAt?: Date | null;
+    catalogWebhook?: {
+        url: string;
+        secretEncrypted: string;
+        isEnabled: boolean;
+        lastNotifiedAt?: Date | null;
+        lastVersion?: string | null;
+    } | null;
     createdAt?: Date;
     updatedAt?: Date;
+}
+
+export interface SafeClient extends Omit<Client, 'hashedToken' | 'catalogWebhook'> {
+    hashedToken: '***';
+    catalogWebhook?: {
+        url: string;
+        isEnabled: boolean;
+        hasSecret: boolean;
+        lastNotifiedAt?: Date | null;
+        lastVersion?: string | null;
+    } | null;
+}
+
+function isPrivateIpAddress(address: string): boolean {
+    const version = isIP(address);
+    if (version === 4) {
+        const [a, b] = address.split('.').map((part) => Number(part));
+        if (a === 10 || a === 127 || a === 0) return true;
+        if (a === 169 && b === 254) return true;
+        if (a === 172 && b >= 16 && b <= 31) return true;
+        if (a === 192 && b === 168) return true;
+        if (a >= 224) return true;
+        return false;
+    }
+
+    if (version === 6) {
+        const normalized = address.toLowerCase();
+        return normalized === '::1'
+            || normalized.startsWith('fc')
+            || normalized.startsWith('fd')
+            || normalized.startsWith('fe8')
+            || normalized.startsWith('fe9')
+            || normalized.startsWith('fea')
+            || normalized.startsWith('feb');
+    }
+
+    return false;
+}
+
+function isPrivateHostname(hostname: string): boolean {
+    const normalized = hostname.toLowerCase();
+    return normalized === 'localhost'
+        || normalized === '127.0.0.1'
+        || normalized === '::1'
+        || normalized === '0.0.0.0'
+        || normalized === 'host.docker.internal'
+        || normalized.endsWith('.local')
+        || normalized.endsWith('.internal');
+}
+
+async function assertSafeWebhookUrl(rawUrl: string): Promise<string> {
+    const parsed = new URL(rawUrl);
+    if (parsed.protocol !== 'https:') {
+        throw new RequestValidationError('catalogWebhook.url must use https');
+    }
+    if (parsed.username || parsed.password) {
+        throw new RequestValidationError('catalogWebhook.url must not embed credentials');
+    }
+    if (isPrivateHostname(parsed.hostname) || isPrivateIpAddress(parsed.hostname)) {
+        throw new RequestValidationError('catalogWebhook.url must not target private hosts or IP ranges');
+    }
+
+    const resolved = await lookup(parsed.hostname, { all: true });
+    if (resolved.some((entry) => isPrivateIpAddress(entry.address))) {
+        throw new RequestValidationError('catalogWebhook.url must not resolve to a private IP range');
+    }
+
+    return parsed.toString();
+}
+
+export function toSafeClient(client: Client): SafeClient {
+    return {
+        ...client,
+        hashedToken: '***',
+        catalogWebhook: client.catalogWebhook
+            ? {
+                url: client.catalogWebhook.url,
+                isEnabled: client.catalogWebhook.isEnabled,
+                hasSecret: Boolean(client.catalogWebhook.secretEncrypted),
+                lastNotifiedAt: client.catalogWebhook.lastNotifiedAt ?? null,
+                lastVersion: client.catalogWebhook.lastVersion ?? null,
+            }
+            : null,
+    };
 }
 
 export async function listClients(): Promise<Client[]> {
@@ -51,9 +146,22 @@ export async function createClient(data: {
     name: string;
     role: 'ADMIN' | 'CLIENT';
     expiresAt?: Date;
+    catalogWebhook?: {
+        url: string;
+        secret: string;
+    };
 }): Promise<{ client: Client; plaintextToken: string }> {
     const { plaintextToken, hashedToken } = issueClientToken();
     const now = new Date();
+    const catalogWebhook = data.catalogWebhook
+        ? {
+            url: await assertSafeWebhookUrl(data.catalogWebhook.url),
+            secretEncrypted: encrypt(data.catalogWebhook.secret),
+            isEnabled: true,
+            lastNotifiedAt: null,
+            lastVersion: null,
+        }
+        : null;
 
     const clientData = {
         name: data.name,
@@ -64,6 +172,7 @@ export async function createClient(data: {
         expiresAt: data.expiresAt ?? null,
         lastUsedAt: null,
         lastRotatedAt: now,
+        catalogWebhook,
         createdAt: now,
         updatedAt: now,
     };
@@ -135,4 +244,55 @@ export async function rotateClientToken(id: string): Promise<{ client: Client; p
         client: { id, ...current, ...updateData } as Client,
         plaintextToken,
     };
+}
+
+export async function markCatalogWebhookDelivered(clientId: string, version: string, deliveredAt: Date): Promise<void> {
+    await db.collection(COLLECTION).doc(clientId).update({
+        'catalogWebhook.lastVersion': version,
+        'catalogWebhook.lastNotifiedAt': deliveredAt,
+        updatedAt: deliveredAt,
+    });
+}
+
+export async function notifyCatalogWebhookSubscribers(payload: { version: string; updatedAt: Date }): Promise<void> {
+    const clients = await listClients();
+    const targets = clients.filter((client) =>
+        client.role === 'CLIENT'
+        && client.isActive
+        && !client.revokedAt
+        && client.catalogWebhook?.isEnabled
+        && client.catalogWebhook.url
+        && client.catalogWebhook.secretEncrypted
+    );
+
+    const results = await Promise.allSettled(targets.map(async (client) => {
+        const webhook = client.catalogWebhook!;
+        const response = await fetch(webhook.url, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-Catalog-Webhook-Secret': decrypt(webhook.secretEncrypted),
+            },
+            body: JSON.stringify({
+                version: payload.version,
+                updated_at: payload.updatedAt.toISOString(),
+            }),
+        });
+
+        if (!response.ok) {
+            throw new Error(`Catalog webhook failed for client "${client.name}" with status ${response.status}`);
+        }
+
+        await markCatalogWebhookDelivered(client.id!, payload.version, payload.updatedAt);
+    }));
+
+    results.forEach((result, index) => {
+        if (result.status === 'rejected') {
+            console.error('[CATALOG_WEBHOOK] delivery_failed', {
+                clientId: targets[index].id,
+                clientName: targets[index].name,
+                error: result.reason instanceof Error ? result.reason.message : String(result.reason),
+            });
+        }
+    });
 }

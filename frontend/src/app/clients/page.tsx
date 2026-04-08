@@ -15,6 +15,13 @@ interface Client {
     expiresAt?: string | null;
     lastUsedAt?: string | null;
     lastRotatedAt?: string | null;
+    catalogWebhook?: {
+        url: string;
+        isEnabled: boolean;
+        hasSecret: boolean;
+        lastNotifiedAt?: string | null;
+        lastVersion?: string | null;
+    } | null;
 }
 
 function formatDateTime(value?: string | null): string {
@@ -31,7 +38,13 @@ export default function ClientsPage() {
     const [loading, setLoading] = useState(true);
     const [showModal, setShowModal] = useState(false);
     const [issuedToken, setIssuedToken] = useState<{ token: string; title: string } | null>(null);
-    const [form, setForm] = useState({ name: '', role: 'CLIENT', expiresAt: '' });
+    const [form, setForm] = useState({
+        name: '',
+        role: 'CLIENT',
+        expiresAt: '',
+        catalogWebhookUrl: '',
+        catalogWebhookSecret: '',
+    });
 
     useEffect(() => {
         if (!isLoading && !isAuthenticated) router.push('/login');
@@ -51,7 +64,7 @@ export default function ClientsPage() {
 
     const openCreate = () => {
         setIssuedToken(null);
-        setForm({ name: '', role: 'CLIENT', expiresAt: '' });
+        setForm({ name: '', role: 'CLIENT', expiresAt: '', catalogWebhookUrl: '', catalogWebhookSecret: '' });
         setShowModal(true);
     };
 
@@ -62,6 +75,12 @@ export default function ClientsPage() {
                 name: form.name,
                 role: form.role,
                 ...(form.expiresAt ? { expiresAt: new Date(form.expiresAt).toISOString() } : {}),
+                ...(form.catalogWebhookUrl || form.catalogWebhookSecret ? {
+                    catalogWebhook: {
+                        url: form.catalogWebhookUrl,
+                        secret: form.catalogWebhookSecret,
+                    },
+                } : {}),
             });
             setIssuedToken({ token: res.data.plaintextToken, title: 'Client Created' });
             loadClients();
@@ -165,6 +184,11 @@ export default function ClientsPage() {
                                             <div className="text-muted text-sm">
                                                 Rotated {formatDateTime(c.lastRotatedAt)}
                                             </div>
+                                            {c.catalogWebhook?.isEnabled && (
+                                                <div className="text-muted text-sm">
+                                                    Catalog webhook: {c.catalogWebhook.url}
+                                                </div>
+                                            )}
                                         </td>
                                         <td>
                                             <span className={`badge badge-${c.role === 'ADMIN' ? 'warning' : 'info'}`}>
@@ -242,6 +266,26 @@ export default function ClientsPage() {
                                             type="datetime-local"
                                             value={form.expiresAt}
                                             onChange={(e) => setForm({ ...form, expiresAt: e.target.value })}
+                                        />
+                                    </div>
+                                    <div className="form-group">
+                                        <label>Catalog Webhook URL (optional)</label>
+                                        <input
+                                            className="form-control"
+                                            type="url"
+                                            value={form.catalogWebhookUrl}
+                                            onChange={(e) => setForm({ ...form, catalogWebhookUrl: e.target.value })}
+                                            placeholder="https://vibecraft.ouni.space/api/internal/catalog-updated"
+                                        />
+                                    </div>
+                                    <div className="form-group">
+                                        <label>Catalog Webhook Secret (optional)</label>
+                                        <input
+                                            className="form-control"
+                                            type="password"
+                                            value={form.catalogWebhookSecret}
+                                            onChange={(e) => setForm({ ...form, catalogWebhookSecret: e.target.value })}
+                                            placeholder="X-Catalog-Webhook-Secret value"
                                         />
                                     </div>
                                 </div>

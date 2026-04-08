@@ -9,8 +9,7 @@ export async function clientRoutes(app: FastifyInstance): Promise<void> {
         preHandler: [authenticateAdminSession],
     }, async (_request, reply) => {
         const clients = await clientService.listClients();
-        // Don't expose hashed tokens
-        const safeClients = clients.map((c) => ({ ...c, hashedToken: '***' }));
+        const safeClients = clients.map(clientService.toSafeClient);
         reply.send({ status: 'success', data: safeClients });
     });
 
@@ -25,8 +24,7 @@ export async function clientRoutes(app: FastifyInstance): Promise<void> {
             reply.code(201).send({
                 status: 'success',
                 data: {
-                    ...result.client,
-                    hashedToken: '***',
+                    ...clientService.toSafeClient(result.client),
                     plaintextToken: result.plaintextToken,
                 },
             });
@@ -59,7 +57,7 @@ export async function clientRoutes(app: FastifyInstance): Promise<void> {
             reply.code(404).send({ status: 'error', message: 'Client not found' });
             return;
         }
-        reply.send({ status: 'success', data: { ...client, hashedToken: '***' } });
+        reply.send({ status: 'success', data: clientService.toSafeClient(client) });
     });
 
     app.post<{ Params: { id: string } }>('/api/v1/clients/:id/revoke', {
@@ -70,7 +68,7 @@ export async function clientRoutes(app: FastifyInstance): Promise<void> {
             reply.code(404).send({ status: 'error', message: 'Client not found' });
             return;
         }
-        reply.send({ status: 'success', data: { ...client, hashedToken: '***' } });
+        reply.send({ status: 'success', data: clientService.toSafeClient(client) });
     });
 
     app.post<{ Params: { id: string } }>('/api/v1/clients/:id/rotate', {
@@ -85,8 +83,7 @@ export async function clientRoutes(app: FastifyInstance): Promise<void> {
         reply.send({
             status: 'success',
             data: {
-                ...result.client,
-                hashedToken: '***',
+                ...clientService.toSafeClient(result.client),
                 plaintextToken: result.plaintextToken,
             },
         });

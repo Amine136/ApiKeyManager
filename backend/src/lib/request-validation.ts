@@ -369,9 +369,13 @@ export function validateClientPayload(body: unknown): {
     name: string;
     role: 'ADMIN' | 'CLIENT';
     expiresAt?: Date;
+    catalogWebhook?: {
+        url: string;
+        secret: string;
+    };
 } {
     const payload = asObject(body, 'request body');
-    assertAllowedKeys(payload, ['name', 'role', 'expiresAt'], 'request body');
+    assertAllowedKeys(payload, ['name', 'role', 'expiresAt', 'catalogWebhook'], 'request body');
 
     const role = readRequiredString(payload, 'role', { maxLength: 20 }) as 'ADMIN' | 'CLIENT';
     if (!['ADMIN', 'CLIENT'].includes(role)) {
@@ -383,10 +387,36 @@ export function validateClientPayload(body: unknown): {
         throw new RequestValidationError('expiresAt must be a future date');
     }
 
+    let catalogWebhook: { url: string; secret: string } | undefined;
+    if (payload.catalogWebhook !== undefined) {
+        const webhook = asObject(payload.catalogWebhook, 'catalogWebhook');
+        assertAllowedKeys(webhook, ['url', 'secret'], 'catalogWebhook');
+
+        const url = readRequiredString(webhook, 'url', { maxLength: 2048, label: 'catalogWebhook.url' });
+        let parsedUrl: URL;
+        try {
+            parsedUrl = new URL(url);
+        } catch {
+            throw new RequestValidationError('catalogWebhook.url must be a valid URL');
+        }
+        if (parsedUrl.protocol !== 'https:') {
+            throw new RequestValidationError('catalogWebhook.url must use https');
+        }
+        if (parsedUrl.username || parsedUrl.password) {
+            throw new RequestValidationError('catalogWebhook.url must not embed credentials');
+        }
+
+        catalogWebhook = {
+            url,
+            secret: readRequiredString(webhook, 'secret', { maxLength: 512, label: 'catalogWebhook.secret' }),
+        };
+    }
+
     return {
         name: readRequiredString(payload, 'name', { maxLength: 120 }),
         role,
         ...(expiresAt ? { expiresAt } : {}),
+        ...(catalogWebhook ? { catalogWebhook } : {}),
     };
 }
 
@@ -396,11 +426,12 @@ export function validateModelPayload(body: unknown): {
     providerId: string;
     cost?: string;
     description?: string;
+    isFrozen?: boolean;
     inputModalities: Array<'TEXT' | 'IMAGE'>;
     outputModalities: Array<'TEXT' | 'IMAGE'>;
 } {
     const payload = asObject(body, 'request body');
-    assertAllowedKeys(payload, ['name', 'displayName', 'providerId', 'cost', 'description', 'inputModalities', 'outputModalities'], 'request body');
+    assertAllowedKeys(payload, ['name', 'displayName', 'providerId', 'cost', 'description', 'isFrozen', 'inputModalities', 'outputModalities'], 'request body');
 
     const inputModalities = readStringArray(payload, 'inputModalities', { maxItems: 2, maxLength: 10 });
     const outputModalities = readStringArray(payload, 'outputModalities', { maxItems: 2, maxLength: 10 });
@@ -427,6 +458,7 @@ export function validateModelPayload(body: unknown): {
         providerId: readRequiredString(payload, 'providerId', { maxLength: 120 }),
         cost: readOptionalString(payload, 'cost', { maxLength: 120 }),
         description: readOptionalString(payload, 'description', { maxLength: 1000 }),
+        isFrozen: readOptionalBoolean(payload, 'isFrozen'),
         inputModalities: normalizeModalities(inputModalities, 'inputModalities'),
         outputModalities: normalizeModalities(outputModalities, 'outputModalities'),
     };
@@ -556,7 +588,27 @@ export function validateProxyInput(body: unknown): ProxyInput {
                 };
             }
 
-            throw new RequestValidationError(`input[${index}].type must be one of: text, image`);
+            if (type === 'image_url') {
+                assertAllowedKeys(part, ['type', 'url'], `input[${index}]`);
+                const url = readRequiredString(part, 'url', { maxLength: 2_048, label: `input[${index}].url` });
+                let parsed: URL;
+                try {
+                    parsed = new URL(url);
+                } catch {
+                    throw new RequestValidationError(`input[${index}].url must be a valid URL`);
+                }
+
+                if (!['https:', 'http:'].includes(parsed.protocol)) {
+                    throw new RequestValidationError(`input[${index}].url must use http or https`);
+                }
+
+                return {
+                    type: 'image_url' as const,
+                    url,
+                };
+            }
+
+            throw new RequestValidationError(`input[${index}].type must be one of: text, image, image_url`);
         });
     }
 

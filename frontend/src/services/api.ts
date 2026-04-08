@@ -81,6 +81,7 @@ export const api = {
     },
     createModel: (data: any) => request<any>('/api/v1/models', { method: 'POST', body: JSON.stringify(data) }),
     updateModel: (id: string, data: any) => request<any>(`/api/v1/models/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+    toggleModelFreeze: (id: string) => request<any>(`/api/v1/models/${id}/freeze`, { method: 'PATCH' }),
     deleteModel: (id: string) => request<any>(`/api/v1/models/${id}`, { method: 'DELETE' }),
 
     // Key-Model Rules

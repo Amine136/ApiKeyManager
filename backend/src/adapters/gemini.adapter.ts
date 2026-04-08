@@ -82,7 +82,11 @@ export class GeminiAdapter implements ProviderAdapter {
             ? parts.find((part: any) => typeof part?.inlineData?.data === 'string')?.inlineData?.data ?? ''
             : '';
         const text = Array.isArray(parts)
-            ? parts.find((part: any) => typeof part?.text === 'string')?.text ?? ''
+            ? parts
+                .filter((part: any) => typeof part?.text === 'string')
+                .map((part: any) => part.text.trim())
+                .filter(Boolean)
+                .join('\n')
             : '';
         const usage = raw?.usageMetadata
             ? {

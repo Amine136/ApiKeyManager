@@ -10,10 +10,20 @@ import { finalizeRateLimitReservation, releaseRateLimitReservation, triggerCoold
 import type { Provider } from './provider.service.js';
 import { TTLCache } from '../lib/cache.js';
 import { env } from '../config/env.js';
-import { getImageParts, getTextParts } from '../adapters/base.adapter.js';
+import { getImageParts, getImageUrlParts, getTextParts } from '../adapters/base.adapter.js';
+import { lookup } from 'dns/promises';
+import { isIP } from 'net';
 
 export const activeProviderCache = new TTLCache<Provider | null>(5 * 60 * 1000);
 const activeProviderInFlight = new Map<string, Promise<Provider | null>>();
+const MAX_REMOTE_IMAGE_BYTES = 10 * 1024 * 1024;
+const REMOTE_IMAGE_FETCH_TIMEOUT_MS = 10_000;
+const ALLOWED_REMOTE_IMAGE_MIME_TYPES = new Set([
+    'image/jpeg',
+    'image/png',
+    'image/webp',
+    'image/gif',
+]);
 
 export function invalidateActiveProviderResolverCache(): void {
     activeProviderCache.invalidate();
@@ -83,6 +93,149 @@ function getRequestedOutputModalities(input: ProxyInput, providerType: string): 
     }
 
     return ['TEXT'];
+}
+
+function isPrivateIpAddress(address: string): boolean {
+    const version = isIP(address);
+    if (version === 4) {
+        const [a, b] = address.split('.').map((part) => Number(part));
+        if (a === 10 || a === 127 || a === 0) return true;
+        if (a === 169 && b === 254) return true;
+        if (a === 172 && b >= 16 && b <= 31) return true;
+        if (a === 192 && b === 168) return true;
+        if (a >= 224) return true;
+        return false;
+    }
+
+    if (version === 6) {
+        const normalized = address.toLowerCase();
+        return normalized === '::1'
+            || normalized.startsWith('fc')
+            || normalized.startsWith('fd')
+            || normalized.startsWith('fe8')
+            || normalized.startsWith('fe9')
+            || normalized.startsWith('fea')
+            || normalized.startsWith('feb');
+    }
+
+    return false;
+}
+
+function isPrivateHostname(hostname: string): boolean {
+    const normalized = hostname.toLowerCase();
+    return normalized === 'localhost'
+        || normalized === '127.0.0.1'
+        || normalized === '::1'
+        || normalized === '0.0.0.0'
+        || normalized === 'host.docker.internal'
+        || normalized.endsWith('.local')
+        || normalized.endsWith('.internal');
+}
+
+async function assertSafeRemoteImageUrl(rawUrl: string): Promise<URL> {
+    let parsed: URL;
+    try {
+        parsed = new URL(rawUrl);
+    } catch {
+        throw new Error('image_url must be a valid URL');
+    }
+
+    if (!['https:', 'http:'].includes(parsed.protocol)) {
+        throw new Error('image_url must use http or https');
+    }
+
+    if (parsed.username || parsed.password) {
+        throw new Error('image_url must not embed credentials');
+    }
+
+    if (isPrivateHostname(parsed.hostname)) {
+        throw new Error('image_url must not target localhost or private hostnames');
+    }
+
+    if (isPrivateIpAddress(parsed.hostname)) {
+        throw new Error('image_url must not target private IP ranges');
+    }
+
+    const resolved = await lookup(parsed.hostname, { all: true });
+    if (resolved.some((entry) => isPrivateIpAddress(entry.address))) {
+        throw new Error('image_url must not resolve to private IP ranges');
+    }
+
+    return parsed;
+}
+
+async function fetchRemoteImageAsPart(url: string): Promise<{ type: 'image'; mimeType: string; data: string }> {
+    const parsed = await assertSafeRemoteImageUrl(url);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), REMOTE_IMAGE_FETCH_TIMEOUT_MS);
+
+    try {
+        const response = await fetch(parsed, {
+            method: 'GET',
+            redirect: 'follow',
+            signal: controller.signal,
+            headers: {
+                'User-Agent': 'ApiKeyManager/1.0',
+                'Accept': 'image/*',
+            },
+        });
+
+        if (!response.ok) {
+            throw new Error(`failed to fetch image_url (${response.status})`);
+        }
+
+        const contentTypeHeader = response.headers.get('content-type')?.split(';')[0].trim().toLowerCase();
+        if (!contentTypeHeader || !ALLOWED_REMOTE_IMAGE_MIME_TYPES.has(contentTypeHeader)) {
+            throw new Error('image_url must return one of: image/jpeg, image/png, image/webp, image/gif');
+        }
+
+        const contentLengthHeader = response.headers.get('content-length');
+        if (contentLengthHeader) {
+            const contentLength = Number(contentLengthHeader);
+            if (Number.isFinite(contentLength) && contentLength > MAX_REMOTE_IMAGE_BYTES) {
+                throw new Error(`image_url exceeds maximum size of ${MAX_REMOTE_IMAGE_BYTES} bytes`);
+            }
+        }
+
+        const buffer = Buffer.from(await response.arrayBuffer());
+        if (buffer.byteLength === 0) {
+            throw new Error('image_url returned an empty image');
+        }
+        if (buffer.byteLength > MAX_REMOTE_IMAGE_BYTES) {
+            throw new Error(`image_url exceeds maximum size of ${MAX_REMOTE_IMAGE_BYTES} bytes`);
+        }
+
+        return {
+            type: 'image',
+            mimeType: contentTypeHeader,
+            data: buffer.toString('base64'),
+        };
+    } catch (error) {
+        if ((error as Error).name === 'AbortError') {
+            throw new Error('image_url fetch timed out');
+        }
+        throw error;
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
+async function resolveImageUrlInputs(input: ProxyInput): Promise<ProxyInput> {
+    if (getImageUrlParts(input).length === 0) {
+        return input;
+    }
+
+    const resolvedInput = await Promise.all(input.input.map(async (part) => {
+        if (part.type !== 'image_url') {
+            return part;
+        }
+        return fetchRemoteImageAsPart(part.url);
+    }));
+
+    return {
+        ...input,
+        input: resolvedInput,
+    };
 }
 
 function extractProviderErrorMessage(rawBody: any): string {
@@ -162,9 +315,22 @@ export async function handleProxy(
     body: any;
 }> {
     const start = Date.now();
+    let resolvedInput: ProxyInput;
+
+    try {
+        resolvedInput = await resolveImageUrlInputs(input);
+    } catch (error) {
+        return {
+            statusCode: 400,
+            body: {
+                status: 'error',
+                message: error instanceof Error ? error.message : 'Failed to resolve image_url input',
+            },
+        };
+    }
 
     // 1. Resolve provider
-    const providerType = input.provider || inferProvider(input.model);
+    const providerType = resolvedInput.provider || inferProvider(resolvedInput.model);
     if (!providerType) {
         return {
             statusCode: 400,
@@ -185,31 +351,40 @@ export async function handleProxy(
     if (
         providerSnapshot.supportedModels &&
         providerSnapshot.supportedModels.length > 0 &&
-        !providerSnapshot.supportedModels.includes(input.model)
+        !providerSnapshot.supportedModels.includes(resolvedInput.model)
     ) {
         return {
             statusCode: 400,
             body: {
                 status: 'error',
-                message: `Model "${input.model}" is not supported by provider "${providerSnapshot.name}".Supported: ${providerSnapshot.supportedModels.join(', ')} `,
+                message: `Model "${resolvedInput.model}" is not supported by provider "${providerSnapshot.name}".Supported: ${providerSnapshot.supportedModels.join(', ')} `,
             },
         };
     }
 
     const { getModelByNameAndProvider } = await import('./model.service.js');
-    const configuredModel = await getModelByNameAndProvider(input.model, providerSnapshot.id!);
+    const configuredModel = await getModelByNameAndProvider(resolvedInput.model, providerSnapshot.id!);
+    if (configuredModel?.isFrozen) {
+        return {
+            statusCode: 403,
+            body: {
+                status: 'error',
+                message: `Model "${resolvedInput.model}" is currently frozen`,
+            },
+        };
+    }
     const capabilities = configuredModel
         ? {
-            inputModalities: configuredModel.inputModalities ?? inferModelCapabilities(input.model, providerSnapshot.type).inputModalities,
-            outputModalities: configuredModel.outputModalities ?? inferModelCapabilities(input.model, providerSnapshot.type).outputModalities,
+            inputModalities: configuredModel.inputModalities ?? inferModelCapabilities(resolvedInput.model, providerSnapshot.type).inputModalities,
+            outputModalities: configuredModel.outputModalities ?? inferModelCapabilities(resolvedInput.model, providerSnapshot.type).outputModalities,
         }
-        : inferModelCapabilities(input.model, providerSnapshot.type);
+        : inferModelCapabilities(resolvedInput.model, providerSnapshot.type);
 
     const requestedInputModalities = Array.from(new Set([
-        ...(getTextParts(input).some((part) => part.text.trim()) ? ['TEXT' as const] : []),
-        ...(getImageParts(input).length > 0 ? ['IMAGE' as const] : []),
+        ...(getTextParts(resolvedInput).some((part) => part.text.trim()) ? ['TEXT' as const] : []),
+        ...(getImageParts(resolvedInput).length > 0 ? ['IMAGE' as const] : []),
     ]));
-    const requestedOutputModalities = getRequestedOutputModalities(input, providerSnapshot.type);
+    const requestedOutputModalities = getRequestedOutputModalities(resolvedInput, providerSnapshot.type);
 
     const invalidInputModality = requestedInputModalities.find((modality) => !capabilities.inputModalities.includes(modality));
     if (invalidInputModality) {
@@ -217,7 +392,7 @@ export async function handleProxy(
             statusCode: 400,
             body: {
                 status: 'error',
-                message: `Model "${input.model}" does not support ${invalidInputModality.toLowerCase()} input`,
+                message: `Model "${resolvedInput.model}" does not support ${invalidInputModality.toLowerCase()} input`,
             },
         };
     }
@@ -228,13 +403,13 @@ export async function handleProxy(
             statusCode: 400,
             body: {
                 status: 'error',
-                message: `Model "${input.model}" does not support ${invalidOutputModality.toLowerCase()} output`,
+                message: `Model "${resolvedInput.model}" does not support ${invalidOutputModality.toLowerCase()} output`,
             },
         };
     }
 
     // 2. Select API key (model-aware: checks keyModelRules for authorisation + rate limits)
-    const keyResult = await selectKey(providerSnapshot.id!, input.model, input.options?.maxTokens ?? 0);
+    const keyResult = await selectKey(providerSnapshot.id!, resolvedInput.model, resolvedInput.options?.maxTokens ?? 0);
     if (!keyResult || 'rejections' in keyResult) {
         const rejections = keyResult && 'rejections' in keyResult ? keyResult.rejections : [];
         const details = rejections.length > 0
@@ -247,7 +422,7 @@ export async function handleProxy(
         await logUsageAggregateOnly({
             apiKeyId: '',
             clientId,
-            model: input.model,
+            model: resolvedInput.model,
             providerName: providerSnapshot.name,
             status: 'failed',
             statusCode,
@@ -279,7 +454,7 @@ export async function handleProxy(
 
     let adapterReq;
     try {
-        adapterReq = adapter.buildRequest(input, decryptedKey);
+        adapterReq = adapter.buildRequest(resolvedInput, decryptedKey);
     } catch (error: any) {
         await releaseRateLimitReservation(reservation);
         return {
@@ -311,7 +486,7 @@ export async function handleProxy(
             await logUsage({
                 apiKeyId: keyDoc.id!,
                 clientId,
-                model: input.model,
+                model: resolvedInput.model,
                 providerName: providerSnapshot.name,
                 status: 'failed',
                 statusCode: response.status,
@@ -339,7 +514,7 @@ export async function handleProxy(
             await logUsage({
                 apiKeyId: keyDoc.id!,
                 clientId,
-                model: input.model,
+                model: resolvedInput.model,
                 providerName: providerSnapshot.name,
                 status: 'failed',
                 statusCode: 502,
@@ -365,7 +540,7 @@ export async function handleProxy(
             await logUsage({
                 apiKeyId: keyDoc.id!,
                 clientId,
-                model: input.model,
+                model: resolvedInput.model,
                 providerName: providerSnapshot.name,
                 status: 'failed',
                 statusCode: 502,
@@ -392,7 +567,7 @@ export async function handleProxy(
         await logUsage({
             apiKeyId: keyDoc.id!,
             clientId,
-            model: input.model,
+            model: resolvedInput.model,
             providerName: providerSnapshot.name,
             status: 'success',
             statusCode: 200,
@@ -409,7 +584,7 @@ export async function handleProxy(
                 status: 'success',
                 data: {
                     provider: providerSnapshot.name,
-                    model: input.model,
+                    model: resolvedInput.model,
                     response: parsed.response,
                     outputs: parsed.outputs ?? null,
                     usage: parsed.usage ?? null,
@@ -429,7 +604,7 @@ export async function handleProxy(
         await logUsage({
             apiKeyId: keyDoc.id!,
             clientId,
-            model: input.model,
+            model: resolvedInput.model,
             providerName: providerSnapshot.name,
             status: 'failed',
             statusCode,
